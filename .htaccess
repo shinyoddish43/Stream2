@@ -1,0 +1,34 @@
+# Stream Studio — Apache defaults for shared hosting (cPanel, Plesk, DirectAdmin).
+# Everything here is optional: the app works without mod_rewrite.
+
+DirectoryIndex index.php index.html
+
+# Never serve the data directory, even if the per-directory file is stripped.
+<IfModule mod_authz_core.c>
+  <FilesMatch "\.(json|lock|lss)$">
+    Require all granted
+  </FilesMatch>
+</IfModule>
+RedirectMatch 404 ^/(.*/)?data/
+RedirectMatch 404 ^/(.*/)?\.git
+
+# The studio needs a camera, a microphone and screen capture. Hosts that set a
+# restrictive default policy will otherwise block getDisplayMedia.
+<IfModule mod_headers.c>
+  Header always set Permissions-Policy "camera=(self), microphone=(self), display-capture=(self)"
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "same-origin"
+  <FilesMatch "\.(js|css)$">
+    Header set Cache-Control "public, max-age=604800"
+  </FilesMatch>
+</IfModule>
+
+# Small files, big win on a slow shared host.
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/html text/css application/javascript application/json image/svg+xml
+</IfModule>
+
+<IfModule mod_mime.c>
+  AddType application/javascript .js
+  AddType application/json .json
+</IfModule>

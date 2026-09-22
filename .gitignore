@@ -1,0 +1,7 @@
+data/*.json
+data/*.lock
+data/*.tmp
+node_modules/
+relay/node_modules/
+*.log
+.DS_Store

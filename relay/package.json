@@ -1,0 +1,10 @@
+{
+  "name": "stream-studio-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WebSocket-to-RTMP relay for Stream Studio: one browser stream, many destinations.",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=16" },
+  "dependencies": { "ws": "^8.18.0" }
+}

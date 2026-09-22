@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "rev": 0,
+  "canvas": { "w": 1280, "h": 720, "fps": 30 },
+  "lowPower": false,
+  "studioMode": false,
+  "transition": { "type": "fade", "duration": 300 },
+  "activeScene": "sc_default",
+  "previewScene": "sc_default",
+  "scenes": [
+    {
+      "id": "sc_default",
+      "name": "Gameplay",
+      "sources": [
+        {
+          "id": "sr_bg", "type": "color", "name": "Background", "visible": true, "locked": true,
+          "x": 0, "y": 0, "w": 1280, "h": 720, "opacity": 1,
+          "settings": { "color": "#101216", "color2": "#1b1f27", "gradient": true }
+        },
+        {
+          "id": "sr_timer", "type": "timer", "name": "Speedrun timer", "visible": true, "locked": false,
+          "x": 16, "y": 16, "w": 300, "h": 420, "opacity": 1,
+          "settings": { "bg": "rgba(8,10,14,0.78)", "accent": "#4a9eff", "rows": 8, "showTitle": true, "showDeltas": true, "showSob": true }
+        }
+      ]
+    }
+  ],
+  "audio": { "master": 1, "inputs": [] },
+  "output": { "mode": "record", "bitrate": 2500, "audioBitrate": 128, "container": "auto", "keyframe": 2, "whipUrl": "", "whipToken": "", "recordName": "stream" },
+  "timer": {
+    "splitsId": "", "comparison": "Personal Best", "decimals": 2, "publishState": true,
+    "hotkeys": { "split": "Numpad1", "reset": "Numpad3", "undo": "Numpad8", "skip": "Numpad2", "pause": "Numpad5" },
+    "link": { "mode": "off", "url": "ws://127.0.0.1:16835" }
+  }
+}

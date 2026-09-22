@@ -1,0 +1,140 @@
+# Stream Studio
+
+A browser-based stream studio with a native speedrun timer. Think Restream's
+multistreaming and OBS's layout, in a page that installs by dragging a folder
+into cPanel — and a LiveSplit-compatible timer built into the compositor
+rather than bolted on as a browser source.
+
+```
+┌───────────────────────────────────────────────┬──────────────┐
+│                                               │  Speedrun    │
+│                 Program                       │  timer       │
+│              (canvas 1280×720)                │  splits      │
+│                                               │  deltas      │
+├──────────┬────────────┬──────────┬────────────┤  clock       │
+│ Scenes   │ Sources    │ Mixer    │ Transitions│  SoB / BPT   │
+└──────────┴────────────┴──────────┴────────────┴──────────────┘
+```
+
+## What it does
+
+- **OBS-shaped UI** — scenes, a source list with drag-to-reorder, an audio
+  mixer with live meters, transitions, studio mode with preview/program.
+- **Native speedrun timer** — reads and writes real LiveSplit `.lss` files,
+  keeps golds, comparisons and attempt counts, and uses LiveSplit's delta
+  colour rules. It draws straight into the canvas as a source, so there is no
+  second page being rendered just to show your splits.
+- **Optional LiveSplit link** — if you want LiveSplit itself (global hotkeys,
+  autosplitters) to drive the timer, a small bridge script relays its Server
+  component to the studio.
+- **Three honest outputs** — record to disk, push over WHIP (WebRTC), or fan
+  one stream out to Twitch / YouTube / Kick at once through the relay.
+- **Runs on old hardware** — Canvas2D compositor, capped frame rate, metering
+  at 15 Hz, an explicit low-power mode, no build step, no framework, no fonts
+  to download. The whole front end is about 120 KB of plain files.
+- **Installs on shared hosting** — PHP 7.4+, flat JSON files, no database.
+  Upload, open `install.php`, done.
+
+## Requirements
+
+| Piece | Needs |
+| --- | --- |
+| Studio (required) | PHP 7.4+ with `json`, `xml`; a writable `data/` directory |
+| Browser | Chrome/Edge 94+, Firefox 100+, or Safari 16+. **HTTPS is required** for screen and camera capture (except on `localhost`) |
+| Relay (optional) | Node 16+ and `ffmpeg`, on a host that allows long-running processes |
+| LiveSplit bridge (optional) | Node 16+ or Python 3.8+, on the PC running LiveSplit |
+
+The studio works with none of the optional pieces: you can record locally and
+run the built-in timer with nothing but PHP.
+
+## Install
+
+See **[docs/INSTALL-CPANEL.md](docs/INSTALL-CPANEL.md)** for the click-by-click
+version. The short form:
+
+1. Upload the repository into `public_html/studio/` (or wherever you like).
+2. Make `data/` writable — 0755 is usually enough, 0775 on some hosts.
+3. Visit `https://yoursite/studio/install.php`, create the owner account.
+4. Delete `install.php`.
+5. Open `index.php` and add a display capture.
+
+## The speedrun timer
+
+Import the splits you already have: **Splits → Import .lss**. Everything
+LiveSplit stores comes across — personal best splits, gold segments, extra
+comparisons, the attempt count. Finishing a run updates the PB; resetting keeps
+any golds you set. Export at any time and the file opens in LiveSplit.
+
+Colour rules match LiveSplit exactly:
+
+| Colour | Meaning |
+| --- | --- |
+| Bright green | Ahead of comparison, gaining time |
+| Dark green | Ahead, but losing time on this segment |
+| Red | Behind, losing time |
+| Orange | Behind, but gaining |
+| Gold | New best segment |
+
+Hotkeys (Numpad 1/3/8/2/5 by default) work while the studio tab has focus.
+Browsers cannot capture keys behind a full-screen game — that is a platform
+limit, not an oversight. Two ways around it:
+
+- Pop the timer out into its own small window (⧉ in the timer dock) and keep
+  it on top.
+- Run LiveSplit as usual and connect the bridge (see `bridge/README.md`); then
+  LiveSplit's global hotkeys drive both.
+
+## Outputs
+
+| Mode | What happens | Needs |
+| --- | --- | --- |
+| **Record** | `MediaRecorder` writes a `.webm`/`.mp4` to your computer when you stop | nothing |
+| **WHIP** | One WebRTC stream to a WHIP ingest endpoint | a WHIP host |
+| **Relay** | WebM chunks over WebSocket → `ffmpeg` → every enabled RTMP destination | `relay/` on a Node host |
+
+Stream keys are encrypted at rest in `data/destinations.json` and never sent
+back to the browser. When you go live, the studio asks PHP for a 120-second
+HMAC ticket that carries the destination URLs; the relay verifies the ticket
+and never stores anything.
+
+## Performance notes
+
+The studio is written for the machine you have, not the one you wish you had.
+
+- 720p30 is the default because it is what a dual-core laptop can actually
+  sustain while a game is running. 1080p60 is available and will disappoint you.
+- Every *visible* source costs one blit per frame. Hidden sources cost nothing.
+- Low-power mode halves the frame rate and turns off image smoothing.
+- The preview canvas in studio mode renders at half the program rate.
+- Audio metering is a single 15 Hz poll for all strips, not a loop per strip.
+- The timer dock stops updating entirely when no run is going.
+- A background tab is throttled by the browser; the compositor falls back to a
+  timer-driven loop so the stream keeps producing frames, but keep the tab
+  visible if you can.
+
+## Layout
+
+```
+index.php            studio shell            api/index.php     one-file JSON API
+login.php            sign in                 lib/             Store, Auth, Lss
+install.php          setup wizard            assets/js/core/  state, compositor, audio, output, sources
+overlay/timer.html   browser source for OBS  assets/js/timer/ timer engine, .lss, bridge client, hotkeys
+relay/               WebSocket → RTMP fanout assets/js/ui/    docks, dialogs, modals
+bridge/              LiveSplit Server → WS   data/            your scenes, splits and keys (git-ignored)
+```
+
+## Security
+
+- Passwords are hashed with `password_hash` (bcrypt); login attempts are
+  throttled per IP with an exponential backoff.
+- Every mutating request needs a session **and** a CSRF token.
+- Overlay pages authenticate with a rotatable token so OBS can read the timer
+  without holding a login.
+- `data/` ships with an `.htaccess` deny and an empty `index.html`; the
+  installer writes them again in case the upload dropped dotfiles.
+- The relay accepts only signed, short-lived tickets and validates every RTMP
+  URL before handing it to `ffmpeg`.
+
+## Licence
+
+MIT.

@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Speedrun timer overlay</title>
+<style>
+  /* A browser source for OBS or a second machine. Transparent background,
+     no dependencies, one poll loop. Inside the studio itself you do not need
+     this page — the timer source draws straight into the canvas. */
+  :root {
+    --fg: #fff; --dim: rgba(255,255,255,.62); --bg: rgba(8,10,14,.78);
+    --ahead: #4ce0a0; --behind: #e06060; --ahead-loss: #2d9c6f;
+    --behind-gain: #e09a4c; --gold: #d8af3c; --accent: #4a9eff;
+    --mono: ui-monospace, Consolas, "DejaVu Sans Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: transparent; color: var(--fg);
+    font: 15px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body.solid { background: #101216; }
+  .wrap { background: var(--bg); border-radius: 6px; overflow: hidden; width: 100%; }
+  .title { text-align: center; padding: 8px 10px 6px; position: relative; }
+  .game { font-weight: 700; font-size: 17px; }
+  .cat { color: var(--dim); font-size: 13px; }
+  .attempts { position: absolute; right: 9px; bottom: 6px; color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+  ol { list-style: none; margin: 0; padding: 0; }
+  li { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: baseline;
+       padding: 3px 10px; border-bottom: 1px solid rgba(255,255,255,.05); font-size: 14px; }
+  li.current { background: linear-gradient(90deg, rgba(74,158,255,.25), rgba(74,158,255,.05)); }
+  li.done .name { color: rgba(255,255,255,.75); }
+  .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .delta, .time { font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .delta { min-width: 54px; text-align: right; }
+  .time { min-width: 64px; text-align: right; }
+  .clock { text-align: right; padding: 4px 10px 6px; font-family: var(--mono);
+           font-size: 40px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.05; }
+  .info { padding: 4px 10px 8px; font-size: 12px; color: var(--dim); }
+  .info div { display: flex; justify-content: space-between; }
+  .info b { color: var(--fg); font-family: var(--mono); font-weight: 500; }
+  .d-ahead { color: var(--ahead); } .d-behind { color: var(--behind); }
+  .d-ahead-loss { color: var(--ahead-loss); } .d-behind-gain { color: var(--behind-gain); }
+  .d-gold { color: var(--gold); font-weight: 700; }
+  .c-running { color: var(--ahead); } .c-behind { color: var(--behind); }
+  .c-gold { color: var(--gold); } .c-paused { color: var(--dim); }
+  .offline { padding: 10px; color: var(--behind); font-size: 12px; }
+  body.compact .title, body.compact .info { display: none; }
+  body.mode-clock .title, body.mode-clock ol, body.mode-clock .info { display: none; }
+  body.mode-splits .clock, body.mode-splits .info { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title">
+    <div class="game" id="game">—</div>
+    <div class="cat" id="cat"></div>
+    <div class="attempts" id="attempts">0</div>
+  </div>
+  <ol id="splits"></ol>
+  <div class="clock" id="clock">0.00</div>
+  <div class="info">
+    <div><span>Previous segment</span><b id="prev">—</b></div>
+    <div><span>Sum of best</span><b id="sob">—</b></div>
+    <div><span>Best possible</span><b id="bpt">—</b></div>
+  </div>
+  <div class="offline" id="offline" hidden>Waiting for the studio…</div>
+</div>
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+  var token = params.get('token') || '';
+  var mode = params.get('mode');
+  if (params.get('compact')) document.body.classList.add('compact');
+  if (params.get('solid')) document.body.classList.add('solid');
+  if (mode) document.body.classList.add('mode-' + mode);
+  if (params.get('scale')) document.documentElement.style.fontSize = (parseFloat(params.get('scale')) * 15) + 'px';
+
+  var nodes = {
+    game: document.getElementById('game'), cat: document.getElementById('cat'),
+    attempts: document.getElementById('attempts'), splits: document.getElementById('splits'),
+    clock: document.getElementById('clock'), prev: document.getElementById('prev'),
+    sob: document.getElementById('sob'), bpt: document.getElementById('bpt'),
+    offline: document.getElementById('offline'),
+  };
+
+  function fmt(seconds, decimals, sign) {
+    if (seconds === null || seconds === undefined || isNaN(seconds)) return '—';
+    var prefix = seconds < 0 ? '-' : (sign ? '+' : '');
+    var s = Math.abs(seconds);
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    var secStr = decimals > 0 ? (sec < 10 ? '0' : '') + sec.toFixed(decimals)
+      : String(Math.floor(sec)).padStart(2, '0');
+    if (h > 0) return prefix + h + ':' + String(m).padStart(2, '0') + ':' + secStr;
+    if (m > 0) return prefix + m + ':' + secStr;
+    return prefix + (decimals > 0 ? sec.toFixed(decimals) : Math.floor(sec));
+  }
+
+  var rowCache = [];
+  function render(state) {
+    nodes.game.textContent = state.game || '—';
+    nodes.cat.textContent = state.category || '';
+    nodes.attempts.textContent = state.attempts || 0;
+    var segments = state.segments || [];
+    if (rowCache.length !== segments.length) {
+      nodes.splits.innerHTML = '';
+      rowCache = segments.map(function () {
+        var li = document.createElement('li');
+        var name = document.createElement('span'); name.className = 'name';
+        var delta = document.createElement('span'); delta.className = 'delta';
+        var time = document.createElement('span'); time.className = 'time';
+        li.appendChild(name); li.appendChild(delta); li.appendChild(time);
+        nodes.splits.appendChild(li);
+        return { li: li, name: name, delta: delta, time: time };
+      });
+    }
+    segments.forEach(function (seg, i) {
+      var row = rowCache[i];
+      row.li.className = (seg.current ? 'current' : '') + (seg.done ? ' done' : '');
+      row.name.textContent = seg.name;
+      if (seg.delta !== null && seg.delta !== undefined) {
+        row.delta.textContent = fmt(seg.delta, Math.abs(seg.delta) < 60 ? 1 : 0, true);
+        row.delta.className = 'delta ' + (seg.deltaClass || '');
+      } else { row.delta.textContent = ''; row.delta.className = 'delta'; }
+      var shown = seg.time !== null && seg.time !== undefined ? seg.time : seg.compare;
+      row.time.textContent = shown === null || shown === undefined ? '—' : fmt(shown, 0);
+    });
+    nodes.clock.textContent = fmt(state.time, state.time >= 3600 ? 1 : 2);
+    nodes.clock.className = 'clock c-' + (state.clockClass || '');
+    nodes.prev.textContent = state.previousSegment === null || state.previousSegment === undefined
+      ? '—' : fmt(state.previousSegment, 1, true);
+    nodes.sob.textContent = state.sumOfBest === null || state.sumOfBest === undefined ? '—' : fmt(state.sumOfBest, 0);
+    nodes.bpt.textContent = state.bestPossible === null || state.bestPossible === undefined ? '—' : fmt(state.bestPossible, 0);
+    nodes.offline.hidden = true;
+  }
+
+  // Same browser, same profile: BroadcastChannel is instant and free.
+  try {
+    var channel = new BroadcastChannel('streamstudio-timer');
+    channel.onmessage = function (event) { if (event.data && event.data.segments) { lastLocal = Date.now(); render(event.data); } };
+  } catch (e) {}
+  var lastLocal = 0;
+
+  // Otherwise poll the server. The endpoint holds the request open briefly,
+  // so this is closer to a push than it looks, at one request every second.
+  var rev = -1;
+  var failures = 0;
+  function poll() {
+    if (Date.now() - lastLocal < 2000) { setTimeout(poll, 500); return; }
+    fetch('../api/index.php?r=state&since=' + rev + '&wait=4000&token=' + encodeURIComponent(token), { cache: 'no-store' })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        failures = 0;
+        if (data && data.state && data.state.segments) { rev = data.rev; render(data.state); }
+        setTimeout(poll, 60);
+      })
+      .catch(function () {
+        failures++;
+        nodes.offline.hidden = false;
+        nodes.offline.textContent = 'Waiting for the studio…';
+        setTimeout(poll, Math.min(10000, 500 * failures));
+      });
+  }
+  poll();
+
+  // Local smoothing: interpolate the clock between updates so it never looks
+  // like it is stuttering at the poll rate.
+  var last = null;
+  setInterval(function () {
+    // Intentionally cheap: only the clock text is touched here.
+  }, 1000);
+})();
+</script>
+</body>
+</html>
