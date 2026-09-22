@@ -90,8 +90,8 @@
     var secStr = decimals > 0 ? (sec < 10 ? '0' : '') + sec.toFixed(decimals)
       : String(Math.floor(sec)).padStart(2, '0');
     if (h > 0) return prefix + h + ':' + String(m).padStart(2, '0') + ':' + secStr;
-    if (m > 0) return prefix + m + ':' + secStr;
-    return prefix + (decimals > 0 ? sec.toFixed(decimals) : Math.floor(sec));
+    if (m > 0 || !decimals) return prefix + m + ':' + secStr;
+    return prefix + sec.toFixed(decimals);
   }
 
   var rowCache = [];

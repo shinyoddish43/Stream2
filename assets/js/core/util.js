@@ -38,8 +38,10 @@ export function fmtTime(seconds, { decimals = 2, forceSign = false, forceHours =
     ? (sec < 10 ? '0' : '') + sec.toFixed(decimals)
     : String(Math.floor(sec)).padStart(2, '0');
   if (h > 0 || forceHours) return `${sign}${h}:${String(m).padStart(2, '0')}:${secStr}`;
-  if (m > 0) return `${sign}${m}:${secStr}`;
-  return `${sign}${decimals > 0 ? sec.toFixed(decimals) : Math.floor(sec)}`;
+  if (m > 0 || decimals === 0) return `${sign}${m}:${secStr}`;
+  // Sub-minute times keep the bare seconds only when decimals are shown, so a
+  // split column never degrades to a lone "0".
+  return `${sign}${sec.toFixed(decimals)}`;
 }
 
 /** Clock face for the big timer: always minutes, seconds, and 2 decimals. */
