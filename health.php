@@ -29,9 +29,17 @@ $add = function ($label, $state, $detail, $fix = '') use (&$checks) {
 // --- PHP itself
 $add('PHP version', version_compare(PHP_VERSION, '7.4', '>=') ? 'ok' : 'bad', PHP_VERSION,
     'cPanel → Select PHP Version → 8.0 or newer.');
-foreach (['json' => 'required', 'SimpleXML' => 'reading .lss files', 'XMLWriter' => 'writing .lss files'] as $ext => $why) {
-    $loaded = extension_loaded(strtolower($ext)) || class_exists($ext) || function_exists('simplexml_load_string');
-    $add("Extension: $ext", $loaded ? 'ok' : 'bad', $loaded ? 'loaded' : "missing — $why",
+$extensions = [
+    'json' => ['test' => fn() => function_exists('json_encode'), 'why' => 'required'],
+    'SimpleXML' => ['test' => fn() => function_exists('simplexml_load_string'), 'why' => 'reading .lss files'],
+    'XMLWriter' => ['test' => fn() => class_exists('XMLWriter'), 'why' => 'writing .lss files'],
+    'mbstring' => ['test' => fn() => function_exists('mb_strlen'), 'why' => 'optional, tidier handling of non-Latin text'],
+];
+foreach ($extensions as $ext => $spec) {
+    $loaded = ($spec['test'])();
+    $optional = strpos($spec['why'], 'optional') === 0;
+    $add("Extension: $ext", $loaded ? 'ok' : ($optional ? 'warn' : 'bad'),
+        $loaded ? 'loaded' : 'missing — ' . $spec['why'],
         'cPanel → Select PHP Version → Extensions.');
 }
 $add('OpenSSL', function_exists('openssl_encrypt') ? 'ok' : 'warn',

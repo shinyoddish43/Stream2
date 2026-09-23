@@ -326,6 +326,37 @@ try {
   const switched = await page.evaluate(() => window.STUDIO.store.get().activeScene);
   check('Ctrl+Shift+3 switches to the third scene', switched === hotkey, `${switched} vs ${hotkey}`);
 
+  // The splits editor speaks clock time, not raw seconds.
+  await page.click('[data-action="open-splits"]');
+  await page.waitForTimeout(400);
+  const newSplits = page.locator('#modalRoot .modal-foot button', { hasText: 'New splits' });
+  await newSplits.click();
+  await page.waitForTimeout(400);
+  await page.fill('#modalRoot .field:nth-of-type(1) input', 'Test Game');
+  const rows = await page.evaluate(() => document.querySelectorAll('#modalRoot table.grid tbody tr').length);
+  check('the editor opens with the blank run', rows === 3, `rows=${rows}`);
+  // Segment 1: PB typed as a clock time; segment 2: plain seconds.
+  await page.fill('#modalRoot table.grid tbody tr:nth-child(1) td:nth-child(3) input', '1:02.5');
+  await page.fill('#modalRoot table.grid tbody tr:nth-child(1) td:nth-child(4) input', '58');
+  await page.fill('#modalRoot table.grid tbody tr:nth-child(2) td:nth-child(3) input', '2:30');
+  await page.click('#modalRoot table.grid tbody tr:nth-child(1) td:nth-child(2) input');   // blur the last field
+  await page.waitForTimeout(200);
+  const normalised = await page.evaluate(() =>
+    document.querySelector('#modalRoot table.grid tbody tr:nth-child(1) td:nth-child(3) input').value);
+  check('a typed clock time is normalised in place', normalised === '1:02.50', normalised);
+
+  const saveBtn = page.locator('#modalRoot .modal-foot button', { hasText: 'Save & load' });
+  await saveBtn.click();
+  await page.waitForTimeout(900);
+  const loaded = await page.evaluate(() => {
+    const run = window.STUDIO.timer.exportRun();
+    return { game: run.game, first: run.segments[0].pb, gold: run.segments[0].best, second: run.segments[1].pb };
+  });
+  check('the clock time is stored as seconds', Math.abs(loaded.first - 62.5) < 0.01, JSON.stringify(loaded));
+  check('plain seconds still work', Math.abs(loaded.gold - 58) < 0.01, JSON.stringify(loaded));
+  check('and so does mm:ss', Math.abs(loaded.second - 150) < 0.01, JSON.stringify(loaded));
+  check('the splits are loaded into the timer', loaded.game === 'Test Game', JSON.stringify(loaded));
+
   // Theme switching touches the interface only.
   const themed = await page.evaluate(async () => {
     window.STUDIO.store.update((d) => { d.theme = 'light'; });

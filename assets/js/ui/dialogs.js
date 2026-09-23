@@ -6,7 +6,7 @@ import { api } from '../core/api.js';
 import { SOURCE_TYPES, getRuntime, dropRuntime, countdownRemaining, formatCountdown } from '../core/sources.js';
 import { mixer } from '../core/audio.js';
 import { pickMimeType } from '../core/output.js';
-import { parseLss, buildLss, emptyRun } from '../timer/lss.js';
+import { parseLss, buildLss, emptyRun, parseLssTime } from '../timer/lss.js';
 import { openModal, closeModal, field, input, select, checkbox, button, tabs } from './modal.js';
 
 // --------------------------------------------------------- source properties
@@ -561,7 +561,7 @@ export function openSplitEditor(ctx, run, onSaved) {
   const body = el('div');
   const game = input({ value: working.game || '' });
   const category = input({ value: working.category || '' });
-  const offset = input({ type: 'number', value: working.offset || 0, step: 0.1 });
+  const offset = input({ type: 'number', value: working.offset || 0, step: 0.1, title: 'In seconds. Positive counts down before zero, the way LiveSplit writes it.' });
   const attempts = input({ type: 'number', value: working.attempts || 0, min: 0, step: 1 });
   body.appendChild(field('Game', game));
   body.appendChild(field('Category', category));
@@ -571,15 +571,27 @@ export function openSplitEditor(ctx, run, onSaved) {
   const table = el('table', { class: 'grid' });
   table.appendChild(el('thead', {}, [el('tr', {}, [
     el('th', { text: '#' }), el('th', { text: 'Segment' }),
-    el('th', { text: 'PB split (s)' }), el('th', { text: 'Gold (s)' }), el('th', { text: '' }),
+    el('th', { text: 'PB split' }), el('th', { text: 'Gold' }), el('th', { text: '' }),
   ])]));
   const tbody = el('tbody');
   table.appendChild(tbody);
 
   function addRow(seg = { name: '', pb: null, best: null, comparisons: {} }) {
     const name = input({ value: seg.name || '' });
-    const pb = input({ type: 'number', value: seg.pb ?? '', step: 0.01, placeholder: '—' });
-    const best = input({ type: 'number', value: seg.best ?? '', step: 0.01, placeholder: '—' });
+    // Accepts 1:02:03.4, 2:03.4 or plain seconds, and normalises on blur so it
+    // is obvious what was understood.
+    const time = (value) => {
+      const box = input({ value: value === null || value === undefined ? '' : fmtTime(value, { decimals: 2 }), placeholder: '—' });
+      box.addEventListener('blur', () => {
+        const parsed = parseLssTime(box.value);
+        box.value = parsed === null ? '' : fmtTime(parsed, { decimals: 2 });
+        box.classList.toggle('bad-value', box.value === '' && box.dataset.typed === 'yes');
+      });
+      box.addEventListener('input', () => { box.dataset.typed = box.value.trim() ? 'yes' : ''; });
+      return box;
+    };
+    const pb = time(seg.pb);
+    const best = time(seg.best);
     const row = el('tr', {}, [
       el('td', { class: 'num', text: String(tbody.children.length + 1) }),
       el('td', {}, [name]),
@@ -593,8 +605,8 @@ export function openSplitEditor(ctx, run, onSaved) {
     ]);
     row._read = () => ({
       name: name.value.trim() || 'Split',
-      pb: pb.value === '' ? null : Number(pb.value),
-      best: best.value === '' ? null : Number(best.value),
+      pb: parseLssTime(pb.value),
+      best: parseLssTime(best.value),
       comparisons: seg.comparisons || {},
     });
     tbody.appendChild(row);
@@ -605,7 +617,8 @@ export function openSplitEditor(ctx, run, onSaved) {
   body.appendChild(el('h3', { text: 'Segments' }));
   body.appendChild(table);
   body.appendChild(button('Add segment', { onclick: () => { addRow(); renumber(); } }));
-  body.appendChild(el('p', { class: 'muted', text: 'PB split times are cumulative from the start of the run; golds are per-segment.' }));
+  body.appendChild(el('p', { class: 'muted', text:
+    'Times read as 1:02:03.4, 2:03.4 or plain seconds. PB splits are cumulative from the start of the run; golds are per-segment.' }));
 
   const collect = () => Object.assign(working, {
     game: game.value.trim(),
@@ -808,9 +821,16 @@ export async function openHistory(ctx) {
       el('td', { text: run.game || '—' }),
       el('td', { text: run.category || '—' }),
       el('td', { text: done ? fmtTime(run.time, { decimals: 2 }) : '—' }),
-      el('td', { html: run.isPb ? '<b style="color:var(--gold)">personal best</b>'
-        : done ? 'finished' : `reset on split ${(run.reachedSplit || 0) + 1}`
-          + (run.golds ? ` · ${run.golds} gold` : '') }),
+      el('td', {}, [
+        run.isPb
+          ? el('b', { text: 'personal best', style: { color: 'var(--gold)' } })
+          : el('span', {
+              text: done
+                ? 'finished'
+                : `reset on split ${(Number(run.reachedSplit) || 0) + 1}`
+                  + (Number(run.golds) ? ` · ${Number(run.golds)} gold` : ''),
+            }),
+      ]),
     ]));
   }
   table.appendChild(tbody);

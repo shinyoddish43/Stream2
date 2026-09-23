@@ -171,6 +171,14 @@ check "ticket signature verifies"        "$VERIFY" 'SIG_OK'
 check "ticket carries the full rtmp url" "$VERIFY" 'rtmp://live.twitch.tv/app/live_secret_key'
 check "ticket expires soon"              "$VERIFY" '"exp"'
 
+# --- a studio name cannot break out of the boot script
+SETRES="$(post settings '{"site_name":"</script><script>alert(1)</script>"}')"
+check "the hostile studio name is accepted by the API" "$SETRES" '"ok":true'
+SHELL_HTML="$(curl -s -b "$JAR" "http://127.0.0.1:$PORT/index.php")"
+reject "a hostile studio name cannot close the boot script" "$SHELL_HTML" '</script><script>alert(1)'
+check "and it is still rendered somewhere" "$SHELL_HTML" 'alert(1)'
+post settings '{"site_name":"CI"}' >/dev/null
+
 # --- password change
 check "wrong current password is refused" "$(post password '{"current":"nope","next":"anotherpassword"}')" 'current password is wrong'
 check "a short password is refused"       "$(post password '{"current":"hunter2hunter2","next":"short"}')" 'at least 8'

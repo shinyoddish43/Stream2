@@ -22,7 +22,7 @@ $boot = [
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='6' fill='%23e2464a'/></svg>">
 </head>
 <body class="app-shell">
-<script>window.STUDIO_BOOT = <?= json_encode($boot, JSON_UNESCAPED_SLASHES) ?>;</script>
+<script>window.STUDIO_BOOT = <?= json_encode($boot, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
 
 <header class="menubar">
   <div class="brand">

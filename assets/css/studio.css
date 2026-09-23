@@ -311,6 +311,7 @@ table.grid th, table.grid td { text-align: left; padding: .3rem .4rem; border-bo
 table.grid th { color: var(--text-dim); font-weight: 500; font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; }
 table.grid input { background: var(--bg-3); border: 1px solid var(--line); border-radius: 3px; padding: .2rem .3rem; width: 100%; }
 table.grid td.num input { text-align: right; font-family: var(--mono); }
+table.grid input.bad-value { border-color: var(--live); }
 .src-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .4rem; }
 .src-card {
   background: var(--bg-3); border: 1px solid var(--line); border-radius: var(--radius);

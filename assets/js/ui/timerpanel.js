@@ -157,10 +157,17 @@ export function initTimerPanel(ctx) {
   bus.on('timer:results', ({ attempt, isPb, golds }) => {
     if (isPb) toast('New personal best! ' + fmtTime(attempt.real, { decimals: 2 }), 'ok');
     else if (golds.length) toast(`${golds.length} new best segment${golds.length > 1 ? 's' : ''}`, 'ok');
-    // Persist the improved splits and the attempt so nothing is lost on reload.
+    // Persist the improved splits and the attempt so nothing is lost on
+    // reload. Splits that were never saved get saved now: a gold earned on an
+    // unsaved run used to vanish when the page reloaded.
     const splitsId = store.get().timer.splitsId;
     const run = timer.exportRun();
-    if (splitsId) { run.id = splitsId; api.saveSplits(run).catch(() => {}); }
+    if (splitsId) run.id = splitsId;
+    api.saveSplits(run)
+      .then((saved) => {
+        if (!splitsId && saved && saved.id) store.update((d) => { d.timer.splitsId = saved.id; });
+      })
+      .catch(() => { /* offline: the layout still holds the run in memory */ });
     api.addRun({
       game: run.game, category: run.category, time: attempt.real,
       isPb, golds: golds.length, reachedSplit: attempt.reachedSplit, splits: attempt.splits,
