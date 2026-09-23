@@ -44,7 +44,7 @@ $boot = [
     <span class="stat" title="Measured output bitrate"><b id="statBitrate">0</b> kb/s</span>
     <span class="stat" title="Time on air" id="statUptime">00:00:00</span>
     <span class="stat cpu" title="Render cost per frame"><b id="statRender">0.0</b> ms</span>
-    <a class="mb" href="api/index.php?r=session/logout" id="logoutLink" title="Sign out">⎋</a>
+    <a class="mb" href="api/index.php?r=session/logout" id="logoutLink" title="Sign out" aria-label="Sign out">⎋</a>
   </div>
 </header>
 
@@ -67,8 +67,8 @@ $boot = [
     <header class="dock-head">
       <h2>Speedrun timer</h2>
       <div class="dock-tools">
-        <button class="icon" data-action="timer-settings" title="Timer settings">⚙</button>
-        <button class="icon" data-action="timer-popout" title="Open as browser source">⧉</button>
+        <button class="icon" data-action="timer-settings" title="Timer settings" aria-label="Timer settings">⚙</button>
+        <button class="icon" data-action="timer-popout" title="Open as browser source" aria-label="Open as browser source">⧉</button>
       </div>
     </header>
     <div class="dock-body" id="timerPanel">
@@ -112,11 +112,12 @@ $boot = [
     <header class="dock-head"><h2>Scenes</h2></header>
     <div class="dock-body list" id="sceneList"></div>
     <footer class="dock-foot">
-      <button class="icon" data-action="scene-add" title="Add scene">＋</button>
-      <button class="icon" data-action="scene-remove" title="Remove scene">－</button>
-      <button class="icon" data-action="scene-dup" title="Duplicate scene">⧉</button>
-      <button class="icon" data-action="scene-up" title="Move up">▲</button>
-      <button class="icon" data-action="scene-down" title="Move down">▼</button>
+      <button class="icon" data-action="scene-add" title="Add scene" aria-label="Add scene">＋</button>
+      <button class="icon" data-action="scene-remove" title="Remove scene" aria-label="Remove scene">－</button>
+      <button class="icon" data-action="scene-dup" title="Duplicate scene" aria-label="Duplicate scene">⧉</button>
+      <button class="icon" data-action="scene-up" title="Move up" aria-label="Move up">▲</button>
+      <button class="icon" data-action="scene-down" title="Move down" aria-label="Move down">▼</button>
+      <button class="icon" data-action="scene-starter" title="Add a ready-made speedrunning layout" aria-label="Add a ready-made speedrunning layout">✦</button>
     </footer>
   </section>
 
@@ -124,12 +125,12 @@ $boot = [
     <header class="dock-head"><h2>Sources</h2></header>
     <div class="dock-body list" id="sourceList"></div>
     <footer class="dock-foot">
-      <button class="icon" data-action="source-add" title="Add source">＋</button>
-      <button class="icon" data-action="source-remove" title="Remove source">－</button>
-      <button class="icon" data-action="source-props" title="Properties">⚙</button>
-      <button class="icon" data-action="source-up" title="Move up">▲</button>
-      <button class="icon" data-action="source-down" title="Move down">▼</button>
-      <button class="icon" data-action="source-fit" title="Fit to screen">⤢</button>
+      <button class="icon" data-action="source-add" title="Add source" aria-label="Add source">＋</button>
+      <button class="icon" data-action="source-remove" title="Remove source" aria-label="Remove source">－</button>
+      <button class="icon" data-action="source-props" title="Properties" aria-label="Properties">⚙</button>
+      <button class="icon" data-action="source-up" title="Move up" aria-label="Move up">▲</button>
+      <button class="icon" data-action="source-down" title="Move down" aria-label="Move down">▼</button>
+      <button class="icon" data-action="source-fit" title="Fit to screen" aria-label="Fit to screen">⤢</button>
     </footer>
   </section>
 
@@ -137,7 +138,7 @@ $boot = [
     <header class="dock-head"><h2>Audio mixer</h2></header>
     <div class="dock-body" id="mixerList"></div>
     <footer class="dock-foot">
-      <button class="icon" data-action="mixer-add" title="Add audio input">＋</button>
+      <button class="icon" data-action="mixer-add" title="Add audio input" aria-label="Add audio input">＋</button>
       <span class="foot-note">Click a meter name to rename · drag the slider for gain</span>
     </footer>
   </section>

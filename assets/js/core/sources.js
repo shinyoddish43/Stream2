@@ -47,6 +47,14 @@ export const SOURCE_TYPES = {
     hint: 'A flat backdrop. Cheaper than an image and it never needs decoding.',
     defaults: { w: 1280, h: 720, settings: { color: '#101216', color2: '#1b1f27', gradient: false, radius: 0 } },
   },
+  countdown: {
+    label: 'Countdown',
+    hint: 'A "starting in…" clock. Counts down to zero, then shows the finished text.',
+    defaults: { w: 560, h: 110, settings: {
+      minutes: 10, endsAt: 0, size: 72, color: '#ffffff', done: "We're live",
+      prefix: 'Starting in ', font: 'system-ui', align: 'center', outline: 4, outlineColor: '#000000',
+    } },
+  },
   imagefeed: {
     label: 'Refreshing image',
     hint: 'Re-fetches an image URL on an interval — good for external alert/overlay renders without a browser source.',
@@ -87,6 +95,7 @@ function createRuntime(item) {
     case 'text': return new TextRuntime(item);
     case 'color': return new ColorRuntime(item);
     case 'timer': return new TimerRuntime(item);
+    case 'countdown': return new CountdownRuntime(item);
     default: return new BaseRuntime(item);
   }
 }
@@ -313,6 +322,51 @@ class TextRuntime extends BaseRuntime {
   }
 }
 
+/** "Starting in 9:58". A stream's front door, and one draw call. */
+class CountdownRuntime extends BaseRuntime {
+  paint(ctx, item, context) {
+    const s = item.settings || {};
+    const remaining = countdownRemaining(s);
+    const label = remaining > 0
+      ? (s.prefix || '') + formatCountdown(remaining)
+      : (s.done || '');
+    if (!label) return;
+    ctx.save();
+    ctx.font = `700 ${Number(s.size) || 72}px ${s.font || 'system-ui'}, sans-serif`;
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = s.align || 'center';
+    const x = s.align === 'left' ? item.x + 6
+      : s.align === 'right' ? item.x + item.w - 6
+      : item.x + item.w / 2;
+    const y = item.y + item.h / 2;
+    if (Number(s.outline) > 0) {
+      ctx.lineWidth = Number(s.outline);
+      ctx.strokeStyle = s.outlineColor || '#000';
+      ctx.lineJoin = 'round';
+      ctx.strokeText(label, x, y);
+    }
+    ctx.fillStyle = s.color || '#fff';
+    ctx.fillText(label, x, y);
+    ctx.restore();
+  }
+}
+
+/** Seconds left on a countdown, or 0 when it is not running / has finished. */
+export function countdownRemaining(settings) {
+  if (!settings || !settings.endsAt) return 0;
+  return Math.max(0, (settings.endsAt - Date.now()) / 1000);
+}
+
+export function formatCountdown(seconds) {
+  const total = Math.ceil(seconds);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    : `${m}:${String(s).padStart(2, '0')}`;
+}
+
 /**
  * The speedrun timer, painted directly into the program canvas.
  * This is the piece that replaces "add a browser source pointing at
@@ -438,6 +492,7 @@ export function resolveTokens(text, context) {
     split: current.name || '',
     delta: snap.previousSegment === null || snap.previousSegment === undefined
       ? '' : fmtTime(snap.previousSegment, { decimals: 1, forceSign: true }),
+    countdown: context.countdown === undefined ? '' : context.countdown,
     clock: new Date().toLocaleTimeString(),
     date: new Date().toLocaleDateString(),
   };

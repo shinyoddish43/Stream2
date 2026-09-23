@@ -9,7 +9,7 @@
 // driver hiccups mid-stream.
 
 import { bus, clamp } from './util.js';
-import { getRuntime, dropRuntime, roundRect } from './sources.js';
+import { getRuntime, dropRuntime, roundRect, countdownRemaining, formatCountdown } from './sources.js';
 
 // Sources whose pixels change on their own.
 const LIVE_TYPES = new Set(['display', 'camera', 'media', 'imagefeed']);
@@ -145,7 +145,16 @@ export class Compositor {
   }
 
   context() {
-    return { timer: this.timer ? this.timer.snapshot() : null, now: performance.now() };
+    // A {countdown} token in a text source reads the first countdown on the
+    // scene, so the two can be styled independently but stay in step.
+    let countdown;
+    const scene = this.store.get().scenes.find((s) => s.id === this.store.get().activeScene);
+    const source = scene && scene.sources.find((item) => item.type === 'countdown' && item.visible);
+    if (source) {
+      const left = countdownRemaining(source.settings || {});
+      countdown = left > 0 ? formatCountdown(left) : (source.settings || {}).done || '';
+    }
+    return { timer: this.timer ? this.timer.snapshot() : null, now: performance.now(), countdown };
   }
 
   /** Does anything on the current scene change by itself? */
@@ -165,6 +174,7 @@ export class Compositor {
           if (phase === 'running' || this.timer.external) return true;
         }
         if (item.type === 'text' && DYNAMIC_TOKEN.test((item.settings || {}).text || '')) return true;
+        if (item.type === 'countdown' && (item.settings || {}).endsAt > Date.now()) return true;
       }
     }
     return false;

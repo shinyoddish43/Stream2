@@ -3,7 +3,7 @@
 
 import { $, el, bus, toast, clamp, fmtTime, pickFile, readFileText, download } from '../core/util.js';
 import { api } from '../core/api.js';
-import { SOURCE_TYPES, getRuntime, dropRuntime } from '../core/sources.js';
+import { SOURCE_TYPES, getRuntime, dropRuntime, countdownRemaining, formatCountdown } from '../core/sources.js';
 import { mixer } from '../core/audio.js';
 import { pickMimeType } from '../core/output.js';
 import { parseLss, buildLss, emptyRun } from '../timer/lss.js';
@@ -182,6 +182,34 @@ function buildTypeSettings(ctx, item, apply) {
       break;
     }
 
+    case 'countdown': {
+      host.appendChild(number('Length (minutes)', 'minutes', 1, 240, 1));
+      host.appendChild(text('Prefix', 'prefix', 'Starting in '));
+      host.appendChild(text('Text when it hits zero', 'done', "We're live"));
+      host.appendChild(number('Size', 'size', 12, 200, 1));
+      host.appendChild(colour('Colour', 'color', '#ffffff'));
+      const status = el('p', { class: 'muted' });
+      const refresh = () => {
+        const left = countdownRemaining(s);
+        status.textContent = left > 0 ? `Running — ${formatCountdown(left)} left` : 'Not running';
+      };
+      refresh();
+      host.appendChild(el('div', {}, [
+        button('Start', { class: 'btn primary', onclick: () => {
+          set('endsAt', Date.now() + (Number(s.minutes) || 10) * 60000);
+          refresh();
+        } }),
+        button('Stop', { onclick: () => { set('endsAt', 0); refresh(); } }),
+        button('+1 min', { onclick: () => {
+          const base = Math.max(Date.now(), Number(s.endsAt) || Date.now());
+          set('endsAt', base + 60000);
+          refresh();
+        } }),
+      ]));
+      host.appendChild(status);
+      break;
+    }
+
     case 'timer':
       host.appendChild(colour('Accent', 'accent', '#4a9eff'));
       host.appendChild(number('Visible splits', 'rows', 1, 30, 1));
@@ -251,6 +279,14 @@ export function openSettings(ctx) {
     store.update((d) => { d.lowPower = v; })));
   video.appendChild(el('p', { class: 'muted', text:
     'On a dual-core machine, 720p30 with two or three sources is the sweet spot. Every extra source is another blit per frame.' }));
+  const theme = select([['dark', 'Dark'], ['light', 'Light'], ['auto', 'Follow the system']], doc.theme || 'dark');
+  theme.addEventListener('change', () => {
+    store.update((d) => { d.theme = theme.value; });
+    document.documentElement.dataset.theme = theme.value;
+  });
+  video.appendChild(el('h3', { text: 'Appearance' }));
+  video.appendChild(field('Theme', theme));
+  video.appendChild(el('p', { class: 'muted', text: 'This is the studio interface only — it never touches what goes out on stream.' }));
   panels.Video = video;
 
   // --- output

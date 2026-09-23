@@ -12,6 +12,7 @@ export function defaultDoc() {
   return {
     version: 1,
     rev: 0,
+    theme: 'dark',
     canvas: { w: 1280, h: 720, fps: 30 },
     lowPower: false,
     activeScene: sceneId,

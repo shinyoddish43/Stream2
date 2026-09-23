@@ -46,6 +46,7 @@ async function main() {
   new TransformLayer($('#editLayer'), $('#programCanvas'), store, compositor, () => store.editScene());
 
   restoreSplits();
+  applyTheme();
   applyStudioMode();
   wireMenu(panels, timerPanel);
   wireTransitions();
@@ -88,6 +89,13 @@ function wireMenu(panels, timerPanel) {
       $('#btnLowPower').textContent = 'Low power: ' + (store.get().lowPower ? 'on' : 'off');
     },
     'do-transition': doTransition,
+    'cycle-theme': () => {
+      const order = ['dark', 'light', 'auto'];
+      const next = order[(order.indexOf(store.get().theme || 'dark') + 1) % order.length];
+      store.update((d) => { d.theme = next; });
+      applyTheme();
+      toast('Theme: ' + next);
+    },
   });
 
   document.addEventListener('click', (event) => {
@@ -138,6 +146,10 @@ function wireTransitions() {
     });
     applyStudioMode();
   });
+}
+
+function applyTheme() {
+  document.documentElement.dataset.theme = store.get().theme || 'dark';
 }
 
 function applyStudioMode() {

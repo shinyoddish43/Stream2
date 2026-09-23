@@ -148,6 +148,53 @@ try {
   const after = await page.evaluate(() => document.querySelectorAll('#sourceList .row-item').length);
   check('a source can be added', after === before + 1, `${before} -> ${after}`);
 
+  // The starter layout: four scenes, placed and drawn.
+  await page.click('[data-action="scene-starter"]');
+  await page.waitForTimeout(300);
+  await page.click('#modalRoot .modal-foot .btn.primary');
+  await page.waitForTimeout(900);
+  const starter = await page.evaluate(() => {
+    const doc = window.STUDIO.store.get();
+    const names = doc.scenes.map((s) => s.name);
+    const run = doc.scenes.find((s) => s.name === 'Run');
+    const soon = doc.scenes.find((s) => s.name === 'Starting soon');
+    return {
+      names,
+      runHasTimer: !!run && run.sources.some((s) => s.type === 'timer'),
+      soonHasCountdown: !!soon && soon.sources.some((s) => s.type === 'countdown'),
+      // Every source must land inside the canvas, whatever the resolution.
+      inBounds: doc.scenes.every((s) => s.sources.every((i) =>
+        i.x >= 0 && i.y >= 0 && i.x + i.w <= doc.canvas.w && i.y + i.h <= doc.canvas.h)),
+    };
+  });
+  check('the starter layout adds its four scenes',
+    ['Starting soon', 'Run', 'Break', 'Ending'].every((n) => starter.names.includes(n)), JSON.stringify(starter.names));
+  check('the run scene carries the timer', starter.runHasTimer);
+  check('the starting scene carries a countdown', starter.soonHasCountdown);
+  check('every placed source fits the canvas', starter.inBounds);
+
+  // A running countdown paints and counts down.
+  const counting = await page.evaluate(async () => {
+    const doc = window.STUDIO.store.get();
+    const soon = doc.scenes.find((s) => s.name === 'Starting soon');
+    window.STUDIO.store.update((d) => {
+      d.activeScene = soon.id;
+      d.previewScene = soon.id;
+      soon.sources.find((s) => s.type === 'countdown').settings.endsAt = Date.now() + 65000;
+    });
+    await new Promise((r) => setTimeout(r, 1400));
+    const canvas = document.getElementById('programCanvas');
+    const ctx = canvas.getContext('2d');
+    // Anything drawn in the countdown band makes it non-empty.
+    const band = ctx.getImageData(0, Math.round(canvas.height * 0.55), canvas.width, Math.round(canvas.height * 0.16)).data;
+    let bright = 0;
+    for (let i = 0; i < band.length; i += 4) if (band[i] > 200 && band[i + 1] > 200) bright++;
+    const fps = document.getElementById('statFps').textContent;
+    return { bright, fps };
+  });
+  check('the countdown is painted into the canvas', counting.bright > 50, `bright pixels=${counting.bright}`);
+  check('a running countdown keeps the compositor awake', Number(counting.fps) >= 10, `fps=${counting.fps}`);
+
   // Scenes and studio mode.
   await page.click('[data-action="scene-add"]');
   await page.waitForTimeout(400);
@@ -160,7 +207,7 @@ try {
     preview: !document.getElementById('viewPreview').hidden,
     live: !!document.querySelector('#sceneList .row-sub'),
   }));
-  check('a scene can be added', studio.scenes === 2, `scenes=${studio.scenes}`);
+  check('a scene can be added', studio.scenes === 6, `scenes=${studio.scenes}`);
   check('studio mode shows the preview', studio.preview);
   check('a scene is on air', studio.live);
 
@@ -168,7 +215,27 @@ try {
   await page.reload();
   await page.waitForTimeout(2500);
   const reloaded = await page.evaluate(() => document.querySelectorAll('#sceneList .row-item').length);
-  check('the layout persists across a reload', reloaded === 2, `scenes=${reloaded}`);
+  check('the layout persists across a reload', reloaded === 6, `scenes=${reloaded}`);
+
+  // Theme switching touches the interface only.
+  const themed = await page.evaluate(async () => {
+    window.STUDIO.store.update((d) => { d.theme = 'light'; });
+    document.documentElement.dataset.theme = 'light';
+    await new Promise((r) => setTimeout(r, 200));
+    const body = getComputedStyle(document.body).backgroundColor;
+    const canvas = document.getElementById('programCanvas');
+    const pixel = canvas.getContext('2d').getImageData(5, 5, 1, 1).data;
+    window.STUDIO.store.update((d) => { d.theme = 'dark'; });
+    document.documentElement.dataset.theme = 'dark';
+    return { body, pixel: Array.from(pixel) };
+  });
+  check('the light theme repaints the interface', themed.body === 'rgb(238, 240, 244)', themed.body);
+  check('the theme does not touch the composited output', themed.pixel[0] < 60, JSON.stringify(themed.pixel));
+
+  // Every icon button announces itself.
+  const unlabelled = await page.evaluate(() => Array.from(document.querySelectorAll('button.icon'))
+    .filter((b) => !b.getAttribute('aria-label') && !b.textContent.trim().match(/[a-z]/i)).length);
+  check('icon buttons have accessible names', unlabelled === 0, `${unlabelled} unlabelled`);
 
   // The overlay page follows the studio. Start a run first: a reloaded page
   // is idle, and an idle clock proves nothing about the publish path.

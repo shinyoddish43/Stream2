@@ -1,6 +1,6 @@
 // Scene list, source list, and the audio mixer strips.
 
-import { $, el, bus, toast, clamp } from '../core/util.js';
+import { $, el, bus, toast, clamp, uid } from '../core/util.js';
 import { SOURCE_TYPES, makeSource, dropRuntime, getRuntime } from '../core/sources.js';
 import { mixer, toDb, openMicrophone, listAudioInputs } from '../core/audio.js';
 import { openModal, closeModal, button, select, field, input } from './modal.js';
@@ -149,6 +149,86 @@ export function initPanels(ctx) {
     openModal({ title: 'Add source', body: grid, footer: [button('Cancel', { onclick: closeModal })] });
   }
 
+  /**
+   * Four scenes a speedrunner actually needs, wired up and placed: a
+   * countdown card, the run itself, a break card and an outro. Sources that
+   * need a permission prompt (the game capture, a webcam) are left as a
+   * labelled gap rather than a dialog fired at someone who just clicked a
+   * button.
+   */
+  function addStarterScenes() {
+    const canvas = store.get().canvas;
+    const { w, h } = canvas;
+    const card = (name, color2) => ({
+      id: uid('sr'), type: 'color', name, visible: true, locked: true,
+      x: 0, y: 0, w, h, opacity: 1,
+      settings: { color: '#0d1015', color2: color2 || '#1b2230', gradient: true },
+    });
+    const label = (name, text, options = {}) => ({
+      id: uid('sr'), type: 'text', name, visible: true, locked: false,
+      x: options.x ?? Math.round(w * 0.08), y: options.y ?? Math.round(h * 0.4),
+      w: options.w ?? Math.round(w * 0.84), h: options.h ?? Math.round(h * 0.14), opacity: 1,
+      settings: {
+        text, size: options.size ?? Math.round(h / 12), color: options.color || '#ffffff',
+        font: 'system-ui', weight: '700', align: options.align || 'center',
+        outline: 4, outlineColor: '#000000', bg: 'transparent',
+      },
+    });
+
+    const scenes = [
+      {
+        id: uid('sc'), name: 'Starting soon',
+        sources: [
+          card('Backdrop'),
+          label('Title', '{game}', { y: Math.round(h * 0.26), size: Math.round(h / 9) }),
+          label('Category', '{category}', { y: Math.round(h * 0.40), size: Math.round(h / 18), color: '#9fb4d0' }),
+          {
+            id: uid('sr'), type: 'countdown', name: 'Countdown', visible: true, locked: false,
+            x: Math.round(w * 0.2), y: Math.round(h * 0.55), w: Math.round(w * 0.6), h: Math.round(h * 0.16), opacity: 1,
+            settings: { minutes: 10, endsAt: 0, size: Math.round(h / 7), color: '#ffffff',
+              prefix: '', done: "Here we go", font: 'system-ui', align: 'center', outline: 5, outlineColor: '#000000' },
+          },
+          label('PB line', 'PB {pb}  ·  Attempt {attempts}', { y: Math.round(h * 0.78), size: Math.round(h / 26), color: '#8b9bb4' }),
+        ],
+      },
+      {
+        id: uid('sc'), name: 'Run',
+        sources: [
+          card('Backdrop'),
+          label('Add your game capture here (Sources → ＋ → Display)', 'Game capture goes here',
+            { y: Math.round(h * 0.45), size: Math.round(h / 26), color: '#5c6b82' }),
+          {
+            id: uid('sr'), type: 'timer', name: 'Speedrun timer', visible: true, locked: false,
+            x: w - Math.round(w * 0.23) - 16, y: 16,
+            w: Math.round(w * 0.23), h: Math.round(h * 0.62), opacity: 1,
+            settings: { bg: 'rgba(8,10,14,0.78)', accent: '#4a9eff', rows: 8,
+              showTitle: true, showDeltas: true, showSob: true, font: 'system-ui' },
+          },
+        ],
+      },
+      {
+        id: uid('sc'), name: 'Break',
+        sources: [card('Backdrop', '#2a1f2e'), label('Message', 'Back in a moment'),
+          label('Sub', 'Resetting · {attempts} attempts today', { y: Math.round(h * 0.55), size: Math.round(h / 26), color: '#9fb4d0' })],
+      },
+      {
+        id: uid('sc'), name: 'Ending',
+        sources: [card('Backdrop', '#101f1a'), label('Message', 'Thanks for watching'),
+          label('Final', 'Final time {timer}', { y: Math.round(h * 0.55), size: Math.round(h / 20), color: '#4ce0a0' })],
+      },
+    ];
+
+    store.update((d) => {
+      d.scenes.push(...scenes);
+      if (!d.studioMode) d.activeScene = scenes[0].id;
+      d.previewScene = scenes[0].id;
+    });
+    compositor.select(null);
+    renderScenes();
+    renderSources();
+    toast('Added four scenes: Starting soon, Run, Break, Ending', 'ok');
+  }
+
   // --------------------------------------------------------------- mixer
   const meterNodes = new Map();
 
@@ -278,6 +358,24 @@ export function initPanels(ctx) {
         scene.sources.forEach((s) => dropRuntime(s.id));
         store.removeScene(id);
       }
+    },
+    'scene-starter': () => {
+      openModal({
+        title: 'Add a speedrunning layout',
+        body: el('div', {}, [
+          el('p', { text: 'Adds four scenes, sized to your canvas:' }),
+          el('ul', { html: `
+            <li><b>Starting soon</b> — backdrop, game and category from your splits, and a countdown</li>
+            <li><b>Run</b> — the speedrun timer placed top-right, with room for your capture</li>
+            <li><b>Break</b> — a reset card</li>
+            <li><b>Ending</b> — an outro showing the final time</li>` }),
+          el('p', { class: 'muted', text: 'Your existing scenes are left alone. Screen and camera capture stay for you to add, so nothing prompts you here.' }),
+        ]),
+        footer: [
+          button('Cancel', { onclick: closeModal }),
+          button('Add them', { class: 'btn primary', onclick: () => { addStarterScenes(); closeModal(); } }),
+        ],
+      });
     },
     'scene-dup': () => store.duplicateScene(store.get().studioMode ? store.get().previewScene : store.get().activeScene),
     'scene-up': () => store.moveScene(store.get().activeScene, -1),

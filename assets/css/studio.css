@@ -25,6 +25,13 @@
   --mono: ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
 }
 
+@media (prefers-color-scheme: light) {
+  :root[data-theme="auto"] {
+    --bg: #eef0f4; --bg-2: #f7f8fa; --bg-3: #ffffff; --bg-4: #e6e9ef;
+    --line: #ccd2dc; --text: #1b1f27; --text-dim: #5b6472;
+  }
+}
+
 :root[data-theme="light"] {
   --bg: #eef0f4; --bg-2: #f7f8fa; --bg-3: #ffffff; --bg-4: #e6e9ef;
   --line: #ccd2dc; --text: #1b1f27; --text-dim: #5b6472;
@@ -88,6 +95,14 @@ body.page-plain { overflow: auto; display: grid; place-items: start center; padd
 .icon:hover { background: var(--bg-4); color: var(--text); border-color: var(--line); }
 .link { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; }
 .link:hover { text-decoration: underline; }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+/* Only for keyboard focus: a mouse click on a dock row should not ring it. */
+.row-item:focus-visible { outline-offset: -2px; }
 
 /* ---------- app shell ---------- */
 .app-shell {

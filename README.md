@@ -19,7 +19,9 @@ rather than bolted on as a browser source.
 ## What it does
 
 - **OBS-shaped UI** — scenes, a source list with drag-to-reorder, an audio
-  mixer with live meters, transitions, studio mode with preview/program.
+  mixer with live meters, transitions, studio mode with preview/program, and a
+  one-click starter layout for speedrunning (starting-soon countdown, run,
+  break, ending).
 - **Native speedrun timer** — reads and writes real LiveSplit `.lss` files,
   keeps golds, comparisons and attempt counts, and uses LiveSplit's delta
   colour rules. It draws straight into the canvas as a source, so there is no
@@ -50,7 +52,8 @@ run the built-in timer with nothing but PHP.
 ## Install
 
 See **[docs/INSTALL-CPANEL.md](docs/INSTALL-CPANEL.md)** for the click-by-click
-version. The short form:
+version, and **[docs/QUICKSTART-SPEEDRUN.md](docs/QUICKSTART-SPEEDRUN.md)** for
+going from an empty studio to streaming a run in ten minutes. The short form:
 
 1. Upload the repository into `public_html/studio/` (or wherever you like).
 2. Make `data/` writable — 0755 is usually enough, 0775 on some hosts.
@@ -155,7 +158,7 @@ MIT.
 tests/run.sh
 ```
 
-228 assertions across seven suites, no dependencies beyond PHP and (optionally)
+237 assertions across seven suites, no dependencies beyond PHP and (optionally)
 Node:
 
 | Suite | Covers |
