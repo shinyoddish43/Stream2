@@ -59,7 +59,17 @@ going from an empty studio to streaming a run in ten minutes. The short form:
 2. Make `data/` writable — 0755 is usually enough, 0775 on some hosts.
 3. Visit `https://yoursite/studio/install.php`, create the owner account.
 4. Delete `install.php`.
-5. Open `index.php` and add a display capture.
+5. Open `health.php` — it checks the things that are easy to get wrong on a
+   live host, including whether the server is handing out your `data/`
+   directory.
+6. Open `index.php` and add a display capture.
+
+Deploying to a real host, updating it, and the pre-flight checklist are in
+**[docs/GO-LIVE.md](docs/GO-LIVE.md)**: a zip for File Manager, cPanel's Git
+Version Control (there is a `.cpanel.yml` in the repository), `deploy/deploy.sh`
+for rsync over SSH, or a manual GitHub Actions workflow that deploys over FTPS
+or SSH and then calls `health.php` to confirm it worked. Every route excludes
+`data/`, so an update never overwrites your scenes, splits or stream keys.
 
 ## The speedrun timer
 
@@ -123,6 +133,7 @@ The studio is written for the machine you have, not the one you wish you had.
 
 ```
 index.php            studio shell            api/index.php     one-file JSON API
+health.php           post-deploy self-check  deploy/           deploy script + docs
 login.php            sign in                 lib/             Store, Auth, Lss
 install.php          setup wizard            assets/js/core/  state, compositor, audio, output, sources
 overlay/timer.html   browser source for OBS  assets/js/timer/ timer engine, .lss, bridge client, hotkeys
@@ -158,14 +169,15 @@ MIT.
 tests/run.sh
 ```
 
-237 assertions across seven suites, no dependencies beyond PHP and (optionally)
+289 assertions across eight suites, no dependencies beyond PHP and (optionally)
 Node:
 
 | Suite | Covers |
 | --- | --- |
+| `tests/store.test.mjs` | the scene and source bookkeeping: add, remove, duplicate, layer order, and every drag-to-reorder case |
 | `tests/timer.test.mjs` | the timer engine: splits, undo/skip, deltas, all five LiveSplit colour rules, golds, PB folding, sum of best, best possible, offsets, external control |
 | `tests/php.test.php` | `.lss` parsing and writing (including an XXE attempt), the flat-file store, stream-key encryption, password hashing |
-| `tests/api.test.sh` | every API route against a real PHP server in a throwaway copy: auth, CSRF, throttling, overlay tokens, splits import/export, key masking, relay-ticket signatures verified independently |
+| `tests/api.test.sh` | every API route against a real PHP server in a throwaway copy: auth, CSRF, throttling, overlay tokens, splits import/export, key masking, relay-ticket signatures verified independently, the health check, and that a long poll never blocks the studio |
 | `tests/relay.test.mjs` | the relay against a stub ffmpeg: ticket signatures, expiry, non-RTMP and shell-injection targets, that the bytes reach the encoder's stdin unmangled and in order, the session cap, and cleanup on disconnect |
 | `tests/bridge.test.mjs` | both LiveSplit bridges against a fake LiveSplit Server: the hand-written WebSocket handshake and frame decoding, state push, command mapping, and that junk input cannot kill either one |
 | `tests/browser.test.mjs` | the studio in headless Chromium: compositing, idle-frame skipping, the timer, every dialog, scenes, studio mode, persistence across a reload, the overlay page — and fails on any console error |

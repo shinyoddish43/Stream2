@@ -40,7 +40,7 @@ reject() { # reject <name> <haystack> <needle that must be absent>
 }
 
 # --- isolated copy of the app
-for item in api lib assets overlay index.php login.php install.php .htaccess; do
+for item in api lib assets overlay index.php login.php install.php health.php config.sample.php .htaccess; do
   cp -r "$ROOT/$item" "$WORK/" 2>/dev/null
 done
 mkdir -p "$WORK/data"
@@ -186,6 +186,14 @@ check "repeated failures are throttled" "$(curl -s -H 'Content-Type: application
 # --- logout
 check "logout works"                "$(post session/logout '{}')" '"ok":true'
 check "config is closed after logout" "$(curl -s "${API}config")" 'not authenticated'
+
+# --- the health check
+check "health check needs a login once installed" \
+  "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/health.php?format=json")" '302'
+HEALTH="$(curl -s -b "$WORK/jar2" "http://127.0.0.1:$PORT/health.php?format=json")"
+check "health check reports the PHP version" "$HEALTH" '"label":"PHP version"'
+check "health check notices the data directory is servable here" "$HEALTH" 'SERVED YOUR CONFIG'
+check "health check notices install.php is still present" "$HEALTH" 'install.php is still here'
 
 # --- unknown route
 check "unknown routes 404"          "$(get bogus/route)" 'unknown route'
