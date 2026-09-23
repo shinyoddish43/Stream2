@@ -15,7 +15,7 @@ export function initTimerPanel(ctx) {
     game: $('#lsGame'), category: $('#lsCategory'), attempts: $('#lsAttempts'),
     splits: $('#lsSplits'), clock: $('#lsClock'), prevSeg: $('#lsPrevSeg'),
     sob: $('#lsSob'), bpt: $('#lsBpt'), pb: $('#lsPb'), split: $('#btnSplit'),
-    conn: $('#lsConn'),
+    conn: $('#lsConn'), comparison: $('#lsComparison'),
   };
   let rows = [];
   let lastSignature = '';
@@ -42,12 +42,33 @@ export function initTimerPanel(ctx) {
     });
   }
 
+  /** Rebuild the comparison picker from whatever the loaded splits offer. */
+  function renderComparisons() {
+    const names = timer.comparisonNames();
+    const saved = store.get().timer.comparison;
+    if (saved && names.includes(saved)) timer.comparison = saved;
+    else if (!names.includes(timer.comparison)) timer.comparison = names[0];
+    nodes.comparison.innerHTML = '';
+    for (const name of names) {
+      const option = el('option', { value: name, text: name });
+      if (name === timer.comparison) option.selected = true;
+      nodes.comparison.appendChild(option);
+    }
+  }
+
+  nodes.comparison.addEventListener('change', () => {
+    timer.comparison = nodes.comparison.value;
+    store.update((d) => { d.timer.comparison = nodes.comparison.value; });
+    renderLive();
+  });
+
   function renderStatic() {
     const snap = timer.snapshot();
     nodes.game.textContent = snap.game || 'No splits loaded';
     nodes.category.textContent = snap.category || '—';
     nodes.attempts.textContent = String(snap.attempts || 0);
     nodes.pb.textContent = snap.pb === null || snap.pb === undefined ? '—' : fmtTime(snap.pb, { decimals: 0 });
+    renderComparisons();
     buildRows();
     renderLive();
   }
@@ -164,6 +185,7 @@ export function initTimerPanel(ctx) {
       window.open(url, 'studio-timer', 'width=340,height=560,menubar=no,toolbar=no');
     },
     'timer-settings': () => bus.emit('ui:open-splits'),
+    'timer-history': () => bus.emit('ui:open-history'),
   };
 
   renderStatic();

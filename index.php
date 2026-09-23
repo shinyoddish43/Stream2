@@ -94,6 +94,11 @@ $boot = [
         <button class="btn" data-action="timer-pause" title="Pause">⏸</button>
         <button class="btn danger" data-action="timer-reset" title="Reset">⟲</button>
       </div>
+      <div class="ls-compare">
+        <label for="lsComparison">Compare to</label>
+        <select id="lsComparison" title="Which times the deltas are measured against"></select>
+        <button class="link" data-action="timer-history" title="Attempt history">History</button>
+      </div>
       <div class="ls-link" id="lsLink">
         <span class="conn" id="lsConn" data-state="off">local timer</span>
         <button class="link" data-action="timer-connect">Connect LiveSplit…</button>

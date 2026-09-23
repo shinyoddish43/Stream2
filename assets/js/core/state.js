@@ -49,6 +49,7 @@ export function defaultDoc() {
       whipUrl: '',
       whipToken: '',
       recordName: 'stream',
+      streamToDisk: true,
     },
     timer: {
       splitsId: '',

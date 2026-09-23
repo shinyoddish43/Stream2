@@ -254,6 +254,14 @@ body.page-plain { overflow: auto; display: grid; place-items: start center; padd
 .ls-buttons { display: flex; gap: 3px; padding: .35rem .5rem; border-top: 1px solid var(--line); }
 .ls-buttons .btn { flex: 0 0 auto; padding: .3rem .5rem; }
 .ls-buttons #btnSplit { flex: 1; }
+.ls-compare {
+  display: flex; align-items: center; gap: .4rem; padding: .35rem .6rem 0; font-size: .72rem;
+}
+.ls-compare label { color: var(--text-dim); }
+.ls-compare select {
+  flex: 1; min-width: 0; background: var(--bg-3); border: 1px solid var(--line);
+  border-radius: 3px; padding: .15rem .25rem; font-size: .72rem;
+}
 .ls-link { display: flex; align-items: center; gap: .5rem; padding: .3rem .6rem .45rem; font-size: .7rem; }
 .conn { color: var(--text-dim); }
 .conn[data-state="on"] { color: var(--ok); }
@@ -299,6 +307,14 @@ table.grid td.num input { text-align: right; font-family: var(--mono); }
 .kbd { font-family: var(--mono); background: var(--bg-4); border: 1px solid var(--line); border-radius: 3px; padding: .05rem .3rem; font-size: .75rem; }
 .copyrow { display: flex; gap: .3rem; align-items: center; margin: .3rem 0; }
 .copyrow input { flex: 1; background: var(--bg-3); border: 1px solid var(--line); border-radius: 3px; padding: .3rem; font-family: var(--mono); font-size: .72rem; }
+
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: .4rem; margin-bottom: .8rem; }
+.stat-tile {
+  background: var(--bg-3); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: .5rem .6rem; display: flex; flex-direction: column; gap: .15rem;
+}
+.stat-tile span { font-size: .66rem; text-transform: uppercase; letter-spacing: .07em; color: var(--text-dim); }
+.stat-tile b { font-size: 1.1rem; font-variant-numeric: tabular-nums; }
 
 /* ---------- toasts ---------- */
 .toasts { position: fixed; right: 10px; bottom: 10px; display: flex; flex-direction: column; gap: 6px; z-index: 80; }

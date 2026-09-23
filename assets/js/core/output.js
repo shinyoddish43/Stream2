@@ -61,6 +61,30 @@ export class OutputManager {
   }
 
   // ------------------------------------------------------------- recording
+
+  /**
+   * Ask for a file handle up front where the browser supports it, so chunks
+   * go straight to disk. A two-hour stream is several gigabytes; holding that
+   * in a Blob array is exactly how a 4 GB laptop dies mid-run.
+   */
+  async openRecordingFile(mimeType) {
+    if (typeof window.showSaveFilePicker !== 'function') return null;
+    const doc = this.store.get();
+    const extension = mimeType.includes('mp4') ? 'mp4' : 'webm';
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: `${doc.output.recordName || 'stream'}-${stamp}.${extension}`,
+        types: [{ description: 'Video', accept: { [mimeType.split(';')[0]]: ['.' + extension] } }],
+      });
+      return await handle.createWritable();
+    } catch (e) {
+      // The picker was dismissed, or the host blocks it: fall back to memory.
+      if (e.name !== 'AbortError') console.warn('[output] save picker unavailable', e);
+      return null;
+    }
+  }
+
   async startRecording() {
     if (this.recording) return;
     const doc = this.store.get();
@@ -69,6 +93,9 @@ export class OutputManager {
     if (!mimeType) { toast('This browser cannot record video (no MediaRecorder support).', 'err'); return; }
     this.chunks = [];
     this.bytes = 0;
+    this.writer = doc.output.streamToDisk === false ? null : await this.openRecordingFile(mimeType);
+    this.writeQueue = Promise.resolve();
+    this.warnedMemory = false;
     try {
       this.recorder = new MediaRecorder(stream, {
         mimeType,
@@ -81,9 +108,21 @@ export class OutputManager {
     }
     this.recorder.ondataavailable = (event) => {
       if (!event.data || !event.data.size) return;
-      this.chunks.push(event.data);
       this.bytes += event.data.size;
       this.tickBitrate(event.data.size);
+      if (this.writer) {
+        // Serialise the writes: FileSystemWritableFileStream rejects
+        // overlapping write() calls.
+        this.writeQueue = this.writeQueue
+          .then(() => this.writer.write(event.data))
+          .catch((e) => { toast('Write to disk failed: ' + e.message, 'err'); });
+        return;
+      }
+      this.chunks.push(event.data);
+      if (!this.warnedMemory && this.bytes > 512 * 1024 * 1024) {
+        this.warnedMemory = true;
+        toast('Recording is over 512 MB in memory. Stop and save soon, or use a browser that supports saving straight to disk.', 'err');
+      }
     };
     this.recorder.onstop = () => this.finishRecording(mimeType);
     this.recorder.onerror = (event) => toast('Recorder error: ' + (event.error && event.error.name), 'err');
@@ -101,7 +140,20 @@ export class OutputManager {
     bus.emit('output:state', this.state());
   }
 
-  finishRecording(mimeType) {
+  async finishRecording(mimeType) {
+    if (this.writer) {
+      const writer = this.writer;
+      this.writer = null;
+      try {
+        await this.writeQueue;
+        await writer.close();
+        toast(`Recording saved (${fmtBytes(this.bytes)})`, 'ok');
+      } catch (e) {
+        toast('Could not close the recording file: ' + e.message, 'err');
+      }
+      this.recorder = null;
+      return;
+    }
     if (!this.chunks.length) return;
     const doc = this.store.get();
     const extension = mimeType.includes('mp4') ? 'mp4' : 'webm';

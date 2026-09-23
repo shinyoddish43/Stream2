@@ -15,7 +15,7 @@ import { initPanels } from './ui/panels.js';
 import { initTimerPanel } from './ui/timerpanel.js';
 import {
   openSettings, openDestinations, openSplits, openOverlays,
-  openHotkeys, openHelp, openLiveSplitConnect,
+  openHotkeys, openHelp, openLiveSplitConnect, openHistory,
 } from './ui/dialogs.js';
 import { closeModal } from './ui/modal.js';
 
@@ -95,6 +95,7 @@ function wireMenu(panels, timerPanel) {
   });
 
   bus.on('ui:open-splits', () => openSplits(ctx));
+  bus.on('ui:open-history', () => openHistory(ctx));
 
   $('#logoutLink').addEventListener('click', async (event) => {
     event.preventDefault();

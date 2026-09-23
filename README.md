@@ -138,3 +138,23 @@ bridge/              LiveSplit Server → WS   data/            your scenes, spl
 ## Licence
 
 MIT.
+
+## Tests
+
+```bash
+tests/run.sh
+```
+
+162 assertions across four suites, no dependencies beyond PHP and (optionally)
+Node:
+
+| Suite | Covers |
+| --- | --- |
+| `tests/timer.test.mjs` | the timer engine: splits, undo/skip, deltas, all five LiveSplit colour rules, golds, PB folding, sum of best, best possible, offsets, external control |
+| `tests/php.test.php` | `.lss` parsing and writing (including an XXE attempt), the flat-file store, stream-key encryption, password hashing |
+| `tests/api.test.sh` | every API route against a real PHP server in a throwaway copy: auth, CSRF, throttling, overlay tokens, splits import/export, key masking, relay-ticket signatures verified independently |
+| `tests/browser.test.mjs` | the studio in headless Chromium: compositing, the timer, every dialog, scenes, studio mode, persistence across a reload, the overlay page — and fails on any console error |
+
+The browser suite skips itself when Playwright is absent, so the project stays
+installable without npm. Point it at an existing install with
+`PLAYWRIGHT_PATH=/path/to/playwright/index.mjs`.

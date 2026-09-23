@@ -125,7 +125,7 @@ function sv_installed() {
 
 function sv_clamp($n, $min, $max) {
     $n = (float)$n;
-    if ($n < $min) return $min;
-    if ($n > $max) return $max;
+    if ($n < $min) return (float)$min;
+    if ($n > $max) return (float)$max;
     return $n;
 }

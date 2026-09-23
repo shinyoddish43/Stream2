@@ -273,6 +273,15 @@ export function openSettings(ctx) {
   const recordName = input({ value: doc.output.recordName });
   recordName.addEventListener('input', () => store.update((d) => { d.output.recordName = recordName.value; }));
   output.appendChild(field('File prefix', recordName));
+  output.appendChild(checkbox(
+    'Write recordings straight to disk (asks where to save; keeps memory flat)',
+    doc.output.streamToDisk !== false,
+    (v) => store.update((d) => { d.output.streamToDisk = v; })
+  ));
+  if (typeof window.showSaveFilePicker !== 'function') {
+    output.appendChild(el('p', { class: 'muted', text:
+      'This browser has no save-to-disk API, so recordings are held in memory until you stop. Chrome or Edge can stream to disk.' }));
+  }
   output.appendChild(el('p', { class: 'muted', text: 'Encoder in use: ' + (pickMimeType() || 'none — this browser cannot record') }));
   panels.Output = output;
 
@@ -310,6 +319,30 @@ export function openSettings(ctx) {
     try { await api.changePassword(currentPw.value, nextPw.value); toast('Password changed', 'ok'); currentPw.value = nextPw.value = ''; }
     catch (e) { toast(e.message, 'err'); }
   } }));
+  account.appendChild(el('h3', { text: 'Backup' }));
+  account.appendChild(el('p', { class: 'muted', text:
+    'A scene collection is one JSON file: scenes, sources, audio and output settings. Take one before you change a working layout.' }));
+  account.appendChild(button('Export scene collection', { onclick: () => {
+    const stamp = new Date().toISOString().slice(0, 10);
+    download(`stream-studio-layout-${stamp}.json`, JSON.stringify(store.get(), null, 2), 'application/json');
+  } }));
+  account.appendChild(button('Import scene collection…', { onclick: async () => {
+    const file = await pickFile('application/json,.json');
+    if (!file) return;
+    let incoming;
+    try { incoming = JSON.parse(await readFileText(file)); } catch (e) { return toast('That is not valid JSON', 'err'); }
+    if (!incoming || !Array.isArray(incoming.scenes) || !incoming.scenes.length) {
+      return toast('That file has no scenes in it', 'err');
+    }
+    if (!confirm(`Replace the current layout with ${incoming.scenes.length} scene(s) from this file?`)) return;
+    // Keep the server revision so the save is an update, not a conflict.
+    const rev = store.get().rev;
+    store.update((d) => Object.assign(incoming, { rev }));
+    compositor.resize();
+    toast('Layout imported', 'ok');
+    closeModal();
+  } }));
+
   account.appendChild(el('h3', { text: 'Danger zone' }));
   account.appendChild(button('Reset the studio layout', { class: 'btn danger', onclick: () => {
     if (!confirm('Delete all scenes and sources and start fresh?')) return;
@@ -672,6 +705,92 @@ export function openHotkeys(ctx) {
   table.appendChild(tbody);
   body.appendChild(table);
   openModal({ title: 'Hotkeys', body, footer: [button('Close', { class: 'btn primary', onclick: closeModal })] });
+}
+
+
+// ----------------------------------------------------------- run history
+
+export async function openHistory(ctx) {
+  const body = el('div');
+  let runs = [];
+  try { runs = (await api.listRuns()).runs; } catch (e) { toast(e.message, 'err'); }
+
+  if (!runs.length) {
+    body.appendChild(el('p', { class: 'muted', text: 'No attempts recorded yet. Finish or reset a run and it lands here.' }));
+    openModal({ title: 'Attempt history', body, footer: [button('Close', { class: 'btn primary', onclick: closeModal })] });
+    return;
+  }
+
+  const finished = runs.filter((r) => r.time !== null && r.time !== undefined);
+  const best = finished.length ? Math.min.apply(null, finished.map((r) => r.time)) : null;
+  const golds = runs.reduce((sum, r) => sum + (r.golds || 0), 0);
+  const rate = Math.round((finished.length / runs.length) * 100);
+
+  body.appendChild(el('div', { class: 'stat-row' }, [
+    statTile('Attempts', String(runs.length)),
+    statTile('Finished', `${finished.length} (${rate}%)`),
+    statTile('Best', best === null ? '—' : fmtTime(best, { decimals: 2 })),
+    statTile('Golds set', String(golds)),
+  ]));
+
+  // Where runs die: the split that ends the most attempts is the one worth
+  // practising, so it is worth surfacing rather than making people count.
+  const deaths = new Map();
+  for (const run of runs) {
+    if (run.time !== null && run.time !== undefined) continue;
+    const key = run.reachedSplit ?? 0;
+    deaths.set(key, (deaths.get(key) || 0) + 1);
+  }
+  if (deaths.size) {
+    const worst = Array.from(deaths.entries()).sort((a, b) => b[1] - a[1])[0];
+    const segName = (ctx.timer.segments[worst[0]] || {}).name || `split ${worst[0] + 1}`;
+    body.appendChild(el('p', { class: 'muted', text:
+      `Most resets happen on "${segName}" — ${worst[1]} of ${runs.length - finished.length}.` }));
+  }
+
+  const table = el('table', { class: 'grid' });
+  table.appendChild(el('thead', {}, [el('tr', {}, [
+    el('th', { text: 'When' }), el('th', { text: 'Game' }), el('th', { text: 'Category' }),
+    el('th', { text: 'Time' }), el('th', { text: 'Result' }),
+  ])]));
+  const tbody = el('tbody');
+  for (const run of runs.slice(0, 200)) {
+    const done = run.time !== null && run.time !== undefined;
+    tbody.appendChild(el('tr', {}, [
+      el('td', { text: run.at ? new Date(run.at).toLocaleString() : '—' }),
+      el('td', { text: run.game || '—' }),
+      el('td', { text: run.category || '—' }),
+      el('td', { text: done ? fmtTime(run.time, { decimals: 2 }) : '—' }),
+      el('td', { html: run.isPb ? '<b style="color:var(--gold)">personal best</b>'
+        : done ? 'finished' : `reset on split ${(run.reachedSplit || 0) + 1}`
+          + (run.golds ? ` · ${run.golds} gold` : '') }),
+    ]));
+  }
+  table.appendChild(tbody);
+  body.appendChild(table);
+
+  openModal({
+    title: 'Attempt history',
+    body,
+    wide: true,
+    footer: [
+      button('Download CSV', { onclick: () => {
+        const rows = [['when', 'game', 'category', 'seconds', 'is_pb', 'golds', 'reached_split']]
+          .concat(runs.map((r) => [r.at || '', r.game || '', r.category || '', r.time ?? '',
+            r.isPb ? 1 : 0, r.golds || 0, r.reachedSplit ?? '']));
+        const csv = rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+        download('attempt-history.csv', csv, 'text/csv');
+      } }),
+      button('Close', { class: 'btn primary', onclick: closeModal }),
+    ],
+  });
+}
+
+function statTile(label, value) {
+  return el('div', { class: 'stat-tile' }, [
+    el('span', { text: label }),
+    el('b', { text: value }),
+  ]);
 }
 
 // -------------------------------------------------------------------- help
