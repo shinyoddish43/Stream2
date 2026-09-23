@@ -55,6 +55,9 @@ jobs:
       - name: Static demo build tests
         run: CHROMIUM_PATH= PLAYWRIGHT_PATH=playwright node tests/demo.test.mjs
 
+      - name: WHIP output tests
+        run: CHROMIUM_PATH= PLAYWRIGHT_PATH=playwright node tests/whip.test.mjs
+
       - name: End-to-end streaming tests
         run: CHROMIUM_PATH= PLAYWRIGHT_PATH=playwright node tests/stream.test.mjs
 

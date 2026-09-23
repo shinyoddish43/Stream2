@@ -151,21 +151,38 @@
   function poll() {
     if (Date.now() - lastLocal < 2000) { setTimeout(poll, 500); return; }
     fetch('../api/index.php?r=state&since=' + rev + '&wait=2500&token=' + encodeURIComponent(token), { cache: 'no-store' })
-      .then(function (res) { return res.json(); })
+      .then(function (res) {
+        // A refused request still parses as JSON, so check the status: this
+        // used to fall through and re-poll every 60ms forever.
+        if (!res.ok) {
+          var problem = res.status === 401
+            ? 'This overlay link is missing its token, or the token was rotated.'
+            : 'The studio answered ' + res.status + '.';
+          return Promise.reject(new Error(problem));
+        }
+        return res.json();
+      })
       .then(function (data) {
         failures = 0;
         if (data && data.state && data.state.segments) {
           rev = data.rev;
           document.body.dataset.source = 'poll';
+          nodes.offline.hidden = true;
           render(data.state);
+        } else {
+          nodes.offline.hidden = false;
+          nodes.offline.textContent = 'Waiting for the studio\u2026';
         }
         setTimeout(poll, 60);
       })
-      .catch(function () {
+      .catch(function (error) {
         failures++;
         nodes.offline.hidden = false;
-        nodes.offline.textContent = 'Waiting for the studio…';
-        setTimeout(poll, Math.min(10000, 500 * failures));
+        nodes.offline.textContent = error && error.message
+          ? error.message
+          : 'Waiting for the studio\u2026';
+        // Back off rather than hammering a server that is saying no.
+        setTimeout(poll, Math.min(15000, 500 * failures));
       });
   }
   poll();

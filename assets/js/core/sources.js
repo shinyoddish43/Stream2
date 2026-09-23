@@ -227,6 +227,7 @@ class MediaRuntime extends VideoRuntime {
     try {
       await this.video.play();
       this.status = 'ready';
+      bus.emit('source:ready', this.item.id);
     } catch (e) {
       // A muted video should always be allowed to play; if not, show the error.
       this.fail('could not play media: ' + (e.message || e.name));
@@ -244,7 +245,14 @@ class ImageRuntime extends BaseRuntime {
     await new Promise((resolve) => {
       const img = new Image();
       img.crossOrigin = 'anonymous';
-      img.onload = () => { this.img = img; this.status = 'ready'; resolve(); };
+      img.onload = () => {
+        this.img = img;
+        this.status = 'ready';
+        // Decoding finishes long after the frame that asked for it. Without
+        // this the picture never appears on a scene that does not animate.
+        bus.emit('source:ready', this.item.id);
+        resolve();
+      };
       img.onerror = () => { this.fail('could not load image'); resolve(); };
       img.src = url;
     });
@@ -268,7 +276,11 @@ class ImageFeedRuntime extends ImageRuntime {
       const img = new Image();
       img.crossOrigin = 'anonymous';
       // Cache-bust so the browser actually refetches the render.
-      img.onload = () => { this.img = img; this.status = 'ready'; };
+      img.onload = () => {
+        this.img = img;
+        this.status = 'ready';
+        bus.emit('source:ready', this.item.id);
+      };
       img.src = url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now();
     }, seconds * 1000);
   }

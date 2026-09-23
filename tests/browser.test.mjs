@@ -220,6 +220,60 @@ try {
   const reloaded = await page.evaluate(() => document.querySelectorAll('#sceneList .row-item').length);
   check('the layout persists across a reload', reloaded === 6, `scenes=${reloaded}`);
 
+  // Image sources: composited, croppable, and a feed with no URL must not
+  // arm a timer on every rendered frame (it used to).
+  const images = await page.evaluate(async () => {
+    // A 100x100 PNG, left half red and right half blue. Big enough that
+    // scaling cannot blend the halves into each other.
+    const src = document.createElement('canvas');
+    src.width = 100; src.height = 100;
+    const sctx = src.getContext('2d');
+    sctx.fillStyle = '#ff0000'; sctx.fillRect(0, 0, 50, 100);
+    sctx.fillStyle = '#0000ff'; sctx.fillRect(50, 0, 50, 100);
+    const dataUrl = src.toDataURL('image/png');
+
+    const store = window.STUDIO.store;
+    store.update((d) => {
+      const scene = { id: 'sc_img', name: 'Image test', sources: [{
+        id: 'sr_img', type: 'image', name: 'Test image', visible: true, locked: false,
+        x: 0, y: 0, w: 1280, h: 720, opacity: 1, settings: { url: dataUrl, fit: 'stretch' },
+      }] };
+      d.scenes.push(scene);
+      d.studioMode = false;
+      d.activeScene = scene.id;
+      d.previewScene = scene.id;
+    });
+    await new Promise((r) => setTimeout(r, 1200));
+    const ctx = document.getElementById('programCanvas').getContext('2d');
+    const left = Array.from(ctx.getImageData(200, 360, 1, 1).data).slice(0, 3);
+    const right = Array.from(ctx.getImageData(1000, 360, 1, 1).data).slice(0, 3);
+
+    // Crop to the right-hand (blue) pixel: the whole box should turn blue.
+    const item = store.editScene().sources[0];
+    store.update(() => { item.settings.crop = { x: 50, y: 0, w: 50, h: 100 }; });
+    await new Promise((r) => setTimeout(r, 800));
+    const cropped = Array.from(ctx.getImageData(200, 360, 1, 1).data).slice(0, 3);
+
+    // A refreshing-image source with no URL, watched for timer churn.
+    const realSetInterval = window.setInterval;
+    let intervals = 0;
+    window.setInterval = function (...args) { intervals++; return realSetInterval.apply(window, args); };
+    store.update((d) => {
+      d.scenes[d.scenes.length - 1].sources.push({
+        id: 'sr_feed', type: 'imagefeed', name: 'Feed', visible: true, locked: false,
+        x: 0, y: 0, w: 100, h: 100, opacity: 1, settings: { url: '', interval: 5 },
+      });
+    });
+    await new Promise((r) => setTimeout(r, 1500));
+    window.setInterval = realSetInterval;
+
+    return { left, right, cropped, intervals };
+  });
+  check('an image source is composited', images.left.join(',') === '255,0,0', JSON.stringify(images));
+  check('across its whole box', images.right.join(',') === '0,0,255', JSON.stringify(images));
+  check('cropping selects part of the source', images.cropped.join(',') === '0,0,255', JSON.stringify(images));
+  check('a feed with no URL does not arm a timer per frame', images.intervals <= 1, `${images.intervals} intervals`);
+
   // Regression: dragging a source on a still scene moved the handles but not
   // the picture, because the drag path skips the event bus that marks the
   // canvas dirty.
@@ -398,6 +452,74 @@ try {
   check('the overlay is not stuck offline', !overlayState.offline);
   check('an overlay in the same browser is fed directly, not by polling',
     overlayState.source === 'channel', `updated via ${overlayState.source}`);
+
+  // The overlay's display modes are what people actually put in OBS.
+  const modes = await context.newPage();
+  await modes.goto(`${BASE}/overlay/timer.html?token=${token}&mode=clock`);
+  await modes.waitForTimeout(2000);
+  const clockOnly = await modes.evaluate(() => ({
+    clock: getComputedStyle(document.querySelector('.clock')).display,
+    splits: getComputedStyle(document.querySelector('ol')).display,
+    title: getComputedStyle(document.querySelector('.title')).display,
+  }));
+  check('clock mode shows only the clock',
+    clockOnly.clock !== 'none' && clockOnly.splits === 'none' && clockOnly.title === 'none',
+    JSON.stringify(clockOnly));
+
+  await modes.goto(`${BASE}/overlay/timer.html?token=${token}&mode=splits`);
+  await modes.waitForTimeout(1500);
+  const splitsOnly = await modes.evaluate(() => ({
+    clock: getComputedStyle(document.querySelector('.clock')).display,
+    splits: getComputedStyle(document.querySelector('ol')).display,
+  }));
+  check('splits mode drops the clock',
+    splitsOnly.clock === 'none' && splitsOnly.splits !== 'none', JSON.stringify(splitsOnly));
+
+  await modes.goto(`${BASE}/overlay/timer.html?token=${token}&compact=1&scale=2`);
+  await modes.waitForTimeout(1500);
+  const compact = await modes.evaluate(() => ({
+    title: getComputedStyle(document.querySelector('.title')).display,
+    rootSize: getComputedStyle(document.documentElement).fontSize,
+    background: getComputedStyle(document.body).backgroundColor,
+  }));
+  check('compact mode drops the title block', compact.title === 'none', JSON.stringify(compact));
+  check('scale is applied', compact.rootSize === '30px', compact.rootSize);
+  check('the overlay background stays transparent for OBS',
+    compact.background === 'rgba(0, 0, 0, 0)', compact.background);
+
+  // A token is what lets an overlay on another machine read the timer. In the
+  // same browser the BroadcastChannel feeds it regardless, which is the point
+  // of that path and is same-origin either way — so test the token from a
+  // separate context, which is what someone else's OBS really is.
+  const stranger = await browser.newContext();
+  const strangerPage = await stranger.newPage();
+  await strangerPage.goto(`${BASE}/overlay/timer.html`);
+  await strangerPage.waitForTimeout(3000);
+  let strangerRequests = 0;
+  strangerPage.on('request', (r) => { if (r.url().includes('r=state')) strangerRequests++; });
+  await strangerPage.reload();
+  await strangerPage.waitForTimeout(3000);
+  const noToken = await strangerPage.evaluate(() => ({
+    offline: !document.getElementById('offline').hidden,
+    game: document.getElementById('game').textContent,
+    message: document.getElementById('offline').textContent,
+  }));
+  noToken.requests = strangerRequests;
+  check('an overlay with no token gets nothing from another browser',
+    noToken.offline && noToken.game === '—', JSON.stringify(noToken));
+  check('and it says what is wrong with the link', /token/i.test(noToken.message), noToken.message);
+  check('rather than retrying as fast as it can', noToken.requests < 15, `${noToken.requests} requests in 3s`);
+
+  await strangerPage.goto(`${BASE}/overlay/timer.html?token=${token}`);
+  await strangerPage.waitForTimeout(3000);
+  const withToken = await strangerPage.evaluate(() => ({
+    offline: !document.getElementById('offline').hidden,
+    rows: document.querySelectorAll('#splits li').length,
+    source: document.body.dataset.source,
+  }));
+  check('and the token makes it work from there', !withToken.offline && withToken.rows > 0, JSON.stringify(withToken));
+  check('which is the polling path, not the channel', withToken.source === 'poll', JSON.stringify(withToken));
+  await stranger.close();
 
   check('no console or page errors', errors.length === 0, errors.join('\n    '));
 } catch (e) {

@@ -35,6 +35,10 @@ echo "── static demo build"
 if command -v node >/dev/null 2>&1; then node tests/demo.test.mjs || STATUS=1
 else echo "skipped (node not installed)"; fi
 
+echo "── whip output"
+if command -v node >/dev/null 2>&1; then node tests/whip.test.mjs || STATUS=1
+else echo "skipped (node not installed)"; fi
+
 echo "── streaming end to end"
 if command -v node >/dev/null 2>&1; then node tests/stream.test.mjs || STATUS=1
 else echo "skipped (node not installed)"; fi

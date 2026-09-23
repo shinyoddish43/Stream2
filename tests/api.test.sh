@@ -70,6 +70,21 @@ curl -s -c "$JAR" -d 'username=tester&password=hunter2hunter2&password2=hunter2h
 check "installer created config" "$(cat "$WORK/data/config.json")" '"installed": true'
 reject "password is not stored in the clear" "$(cat "$WORK/data/config.json")" 'hunter2hunter2'
 
+# --- installer validation (a fresh copy, so the live one is untouched)
+FRESH="$WORK/fresh"
+mkdir -p "$FRESH/data"
+for item in api lib assets index.php login.php install.php; do cp -r "$ROOT/$item" "$FRESH/"; done
+PHP_CLI_SERVER_WORKERS=2 php -S "127.0.0.1:$((PORT+1))" -t "$FRESH" >"$FRESH/server.log" 2>&1 &
+FRESH_PID=$!
+for _ in $(seq 1 40); do curl -sf "http://127.0.0.1:$((PORT+1))/api/index.php?r=health" >/dev/null 2>&1 && break; sleep 0.25; done
+INST="http://127.0.0.1:$((PORT+1))/install.php"
+check "a short password is refused" "$(curl -s -d 'username=someone&password=short&password2=short' "$INST")" 'at least 8 characters'
+check "mismatched passwords are refused" "$(curl -s -d 'username=someone&password=longenough1&password2=different1' "$INST")" 'do not match'
+check "a one-character username is refused" "$(curl -s -d 'username=a&password=longenough1&password2=longenough1' "$INST")" 'Username must be'
+check "nothing was installed by those attempts" "$(curl -s "http://127.0.0.1:$((PORT+1))/api/index.php?r=health")" '"installed":false'
+check "a good account installs" "$(curl -s -d 'username=someone&password=longenough1&password2=longenough1' "$INST")" 'Installed'
+kill $FRESH_PID 2>/dev/null
+
 # --- auth
 check "wrong password is refused" "$(curl -s -H 'Content-Type: application/json' -d '{"username":"tester","password":"nope"}' "${API}session/login")" 'invalid credentials'
 LOGIN="$(curl -s -c "$JAR" -H 'Content-Type: application/json' -d '{"username":"tester","password":"hunter2hunter2"}' "${API}session/login")"
