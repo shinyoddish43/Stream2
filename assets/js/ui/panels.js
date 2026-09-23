@@ -195,8 +195,9 @@ export function initPanels(ctx) {
         id: uid('sc'), name: 'Run',
         sources: [
           card('Backdrop'),
-          label('Add your game capture here (Sources → ＋ → Display)', 'Game capture goes here',
-            { y: Math.round(h * 0.45), size: Math.round(h / 26), color: '#5c6b82' }),
+          label('Capture placeholder — delete once your game is in',
+            'Add your game capture:  Sources → ＋ → Display',
+            { y: Math.round(h * 0.45), size: Math.round(h / 30), color: '#5c6b82' }),
           {
             id: uid('sr'), type: 'timer', name: 'Speedrun timer', visible: true, locked: false,
             x: w - Math.round(w * 0.23) - 16, y: 16,
