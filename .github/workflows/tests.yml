@@ -1,0 +1,47 @@
+name: tests
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: json, xml, openssl
+          coverage: none
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Lint PHP
+        run: find . -name '*.php' -not -path './node_modules/*' -print0 | xargs -0 -n1 php -l
+
+      - name: Timer engine tests
+        run: node tests/timer.test.mjs
+
+      - name: PHP tests
+        run: php tests/php.test.php
+
+      - name: API tests
+        run: bash tests/api.test.sh
+
+      - name: Install Playwright
+        run: npm install --no-save playwright@1.49.0 && npx playwright install --with-deps chromium
+
+      - name: Browser tests
+        run: CHROMIUM_PATH= PLAYWRIGHT_PATH=playwright node tests/browser.test.mjs
+
+      - name: Check the relay and bridge parse
+        run: |
+          node --check relay/server.js
+          node --check bridge/livesplit-bridge.js
+          python3 -m py_compile bridge/livesplit_bridge.py

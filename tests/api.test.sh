@@ -119,6 +119,23 @@ reject "stream key is not on disk in the clear" "$(cat "$WORK/data/destinations.
 check "a masked key round-trips without being re-encrypted as literal dots" \
   "$(post destinations '{"destinations":[{"id":"'"$(sed -n 's/.*"id": "\([^"]*\)".*/\1/p' "$WORK/data/destinations.json" | head -1)"'","name":"Twitch","service":"twitch","url":"rtmp://live.twitch.tv/app","key":"••••••••","enabled":true}]}')" '"count":1'
 
+# --- the installer cannot be re-run against a live site
+curl -s -d 'username=attacker&password=takeoverpassword&password2=takeoverpassword' \
+  "http://127.0.0.1:$PORT/install.php" >/dev/null
+check "a second install attempt is refused" \
+  "$(curl -s -H 'Content-Type: application/json' -d '{"username":"attacker","password":"takeoverpassword"}' "${API}session/login")" 'invalid credentials'
+check "the original owner survives" "$(cat "$WORK/data/config.json")" '"name": "tester"'
+
+# --- destination URLs are validated where it matters: before ffmpeg sees them
+check "a non-rtmp destination is refused" \
+  "$(post destinations '{"destinations":[{"name":"bad","url":"file:///etc/passwd","key":"x","enabled":true}]}')" 'must be a plain rtmp'
+check "a shell-flavoured destination is refused" \
+  "$(post destinations '{"destinations":[{"name":"bad","url":"rtmp://host/app; rm -rf /","key":"x","enabled":true}]}')" 'must be a plain rtmp'
+check "rtmps is accepted" \
+  "$(post destinations '{"destinations":[{"name":"Kick","service":"kick","url":"rtmps://fa723fc1b171.global-contribute.live-video.net:443/app","key":"k","enabled":true}]}')" '"count":1'
+# put the twitch destination back for the ticket test below
+post destinations '{"destinations":[{"name":"Twitch","service":"twitch","url":"rtmp://live.twitch.tv/app","key":"live_secret_key","enabled":true}]}' >/dev/null
+
 # --- relay ticket
 check "no relay configured yet" "$(post relay/ticket '{}')" 'no relay configured'
 check "relay url saves"         "$(post settings '{"relay_url":"wss://relay.example.com/ingest"}')" '"ok":true'

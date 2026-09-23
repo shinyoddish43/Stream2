@@ -46,6 +46,12 @@ case 'session/login': {
     $key = 'throttle';
     $now = time();
     $throttle = $store->read($key, []);
+    // Drop stale entries: a scanner sweeping the internet must not be able to
+    // grow this file forever.
+    foreach ($throttle as $addr => $row) {
+        if (($row['seen'] ?? 0) < $now - 86400) unset($throttle[$addr]);
+    }
+    if (count($throttle) > 500) $throttle = array_slice($throttle, -200, null, true);
     $entry = $throttle[$ip] ?? ['n' => 0, 'until' => 0];
     if (($entry['until'] ?? 0) > $now) {
         sv_fail('too many attempts, wait ' . ($entry['until'] - $now) . 's', 429);
@@ -53,6 +59,7 @@ case 'session/login': {
     $user = Auth::verify($name, $pass);
     if (!$user) {
         $entry['n'] = (int)($entry['n'] ?? 0) + 1;
+        $entry['seen'] = $now;
         if ($entry['n'] >= 5) { $entry['until'] = $now + min(300, 5 * (2 ** ($entry['n'] - 5))); }
         $throttle[$ip] = $entry;
         $store->write($key, $throttle);
@@ -275,6 +282,10 @@ case 'destinations': {
     foreach ($existing as $d) $byId[$d['id'] ?? ''] = $d;
     $next = [];
     foreach ($list as $d) {
+        $url = trim((string)($d['url'] ?? ''));
+        if ($url !== '' && !preg_match('#^rtmps?://[A-Za-z0-9._~:/?\#@!$&\'()*+,;=%-]{3,500}$#', $url)) {
+            sv_fail('destination URL must be a plain rtmp:// or rtmps:// address');
+        }
         $id = preg_replace('/[^a-z0-9_\-]/i', '', (string)($d['id'] ?? '')) ?: sv_id('dst');
         $key = (string)($d['key'] ?? '');
         if ($key === '' || $key === '••••••••') {
@@ -286,7 +297,7 @@ case 'destinations': {
             'id' => $id,
             'name' => substr((string)($d['name'] ?? 'Destination'), 0, 64),
             'service' => substr((string)($d['service'] ?? 'custom'), 0, 32),
-            'url' => substr((string)($d['url'] ?? ''), 0, 512),
+            'url' => $url,
             'key' => $key,
             'enabled' => !empty($d['enabled']),
         ];

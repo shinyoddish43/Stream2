@@ -11,6 +11,10 @@
 import { bus, clamp } from './util.js';
 import { getRuntime, dropRuntime, roundRect } from './sources.js';
 
+// Sources whose pixels change on their own.
+const LIVE_TYPES = new Set(['display', 'camera', 'media', 'imagefeed']);
+const DYNAMIC_TOKEN = /\{(timer|clock|delta|split|attempts|bpt|sob|date)\}/;
+
 const HANDLES = [
   ['nw', 0, 0], ['n', 0.5, 0], ['ne', 1, 0],
   ['w', 0, 0.5], ['e', 1, 0.5],
@@ -34,7 +38,17 @@ export class Compositor {
     this.lastFrameAt = 0;
     this.previewEvery = 2;      // draw the studio-mode preview at half rate
     this.tickCount = 0;
+    this.dirty = true;
+    this.idleThisSecond = 0;
+    // Set by the output manager: while something is being recorded or sent,
+    // the canvas must keep producing frames even if nothing on it moves.
+    this.needsFrames = () => false;
+    this.idleFrames = 0;
     this._loop = this._loop.bind(this);
+    bus.on('doc:changed', () => { this.dirty = true; });
+    bus.on('selection:changed', () => { this.dirty = true; });
+    bus.on('timer:state', () => { this.dirty = true; });
+    bus.on('source:ready', () => { this.dirty = true; });
   }
 
   attach(programCanvas, previewCanvas) {
@@ -96,23 +110,64 @@ export class Compositor {
     if (this.lastFrameAt && elapsed > interval * 2.2) this.skipped++;
     this.lastFrameAt = now;
 
+    // A still scene — a "starting soon" card, say — does not need repainting
+    // sixty times a second while nobody is watching. Skip the draw unless
+    // something moves, something changed, or an output is consuming frames.
+    if (!this.dirty && !this.needsFrames() && !this.transition && !this.sceneIsAnimated()) {
+      this.idleFrames++;
+      this.idleThisSecond++;
+      if (now - this.lastFpsAt >= 1000) this.emitStats(now);
+      this._schedule();
+      return;
+    }
+    this.dirty = false;
+
     const t0 = performance.now();
     try { this.renderFrame(now); } catch (e) { console.error('[compositor]', e); }
     this.renderMs = this.renderMs * 0.9 + (performance.now() - t0) * 0.1;
 
     this.frames++;
     this.tickCount++;
-    if (now - this.lastFpsAt >= 1000) {
-      this.fps = Math.round((this.frames * 1000) / (now - this.lastFpsAt));
-      this.frames = 0;
-      this.lastFpsAt = now;
-      bus.emit('compositor:stats', { fps: this.fps, skipped: this.skipped, renderMs: this.renderMs });
-    }
+    if (now - this.lastFpsAt >= 1000) this.emitStats(now);
     this._schedule();
+  }
+
+  emitStats(now) {
+    const seconds = (now - this.lastFpsAt) / 1000;
+    this.fps = Math.round(this.frames / seconds);
+    // "Idle" is not "broken": it means the scene is a still image and the
+    // compositor is deliberately not repainting it.
+    const idle = this.idleThisSecond > this.frames;
+    this.frames = 0;
+    this.idleThisSecond = 0;
+    this.lastFpsAt = now;
+    bus.emit('compositor:stats', { fps: this.fps, skipped: this.skipped, renderMs: this.renderMs, idle });
   }
 
   context() {
     return { timer: this.timer ? this.timer.snapshot() : null, now: performance.now() };
+  }
+
+  /** Does anything on the current scene change by itself? */
+  sceneIsAnimated() {
+    const doc = this.store.get();
+    const scenes = doc.studioMode
+      ? [doc.activeScene, doc.previewScene]
+      : [doc.activeScene];
+    for (const sceneId of scenes) {
+      const scene = doc.scenes.find((s) => s.id === sceneId);
+      if (!scene) continue;
+      for (const item of scene.sources) {
+        if (!item.visible) continue;
+        if (LIVE_TYPES.has(item.type)) return true;
+        if (item.type === 'timer') {
+          const phase = this.timer && this.timer.phase;
+          if (phase === 'running' || this.timer.external) return true;
+        }
+        if (item.type === 'text' && DYNAMIC_TOKEN.test((item.settings || {}).text || '')) return true;
+      }
+    }
+    return false;
   }
 
   renderFrame(now) {

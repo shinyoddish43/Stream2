@@ -72,6 +72,33 @@ After it succeeds:
 4. **Splits → Import .lss** to bring in your existing splits.
 5. **Start recording** to test, then check the file that downloads.
 
+## 7. nginx and other non-Apache hosts
+
+`.htaccess` is an Apache file. On nginx (or LiteSpeed configured to ignore it,
+or Caddy) nothing stops the world from fetching `data/config.json`, so move the
+data out of the web root instead:
+
+```bash
+mkdir -p /home/USER/stream-studio-data
+cp config.sample.php config.php
+```
+
+Then edit `config.php`:
+
+```php
+define('STUDIO_DATA_DIR', '/home/USER/stream-studio-data');
+```
+
+If you would rather keep the data where it is, deny it in the server block:
+
+```nginx
+location ~ ^/studio/(data|lib|tests)/ { deny all; return 404; }
+location ~ /\.git { deny all; return 404; }
+```
+
+Either way, check it: `curl https://yourdomain.com/studio/data/config.json`
+must return 403 or 404, never JSON.
+
 ---
 
 ## Optional: the RTMP relay (multistreaming)

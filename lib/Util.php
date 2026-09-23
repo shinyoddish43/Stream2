@@ -102,6 +102,19 @@ function sv_decrypt($blob) {
 }
 
 function sv_data_dir() {
+    // An optional config.php at the app root may define STUDIO_DATA_DIR to put
+    // the data outside the web root. That is the right answer on nginx, where
+    // there is no .htaccess to deny the directory with.
+    static $override = null;
+    if ($override === null) {
+        $configFile = dirname(__DIR__) . '/config.php';
+        if (is_file($configFile)) require_once $configFile;
+        $override = defined('STUDIO_DATA_DIR') ? rtrim(STUDIO_DATA_DIR, '/') : '';
+    }
+    if ($override !== '') {
+        if (!is_dir($override)) @mkdir($override, 0775, true);
+        return $override;
+    }
     $dir = dirname(__DIR__) . '/data';
     if (!is_dir($dir)) @mkdir($dir, 0775, true);
     return $dir;

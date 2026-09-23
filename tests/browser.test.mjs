@@ -64,8 +64,13 @@ await fetch(`${BASE}/install.php`, {
 
 let browser;
 try {
+  // Use the browser Playwright installed unless a path is given. The default
+  // below is where this project's container keeps Chromium.
+  const executablePath = process.env.CHROMIUM_PATH === ''
+    ? undefined
+    : (process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium');
   browser = await chromium.launch({
-    executablePath: process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium',
+    executablePath,
     args: ['--no-sandbox', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'],
   });
   const page = await browser.newPage({ viewport: { width: 1500, height: 860 } });
@@ -82,7 +87,7 @@ try {
   await page.waitForTimeout(2500);
 
   const boot = await page.evaluate(() => ({
-    fps: Number(document.getElementById('statFps').textContent),
+    fps: document.getElementById('statFps').textContent,
     scenes: document.querySelectorAll('#sceneList .row-item').length,
     sources: document.querySelectorAll('#sourceList .row-item').length,
     splits: document.querySelectorAll('#lsSplits li').length,
@@ -91,7 +96,7 @@ try {
     background: document.getElementById('programCanvas').getContext('2d').getImageData(900, 600, 1, 1).data[2],
     timerPanel: document.getElementById('programCanvas').getContext('2d').getImageData(60, 60, 1, 1).data[2],
   }));
-  check('compositor reaches the target frame rate', boot.fps >= 24, `fps=${boot.fps}`);
+  check('a still scene idles instead of burning frames', boot.fps === 'idle' || Number(boot.fps) < 5, `fps=${boot.fps}`);
   check('the default scene loads', boot.scenes === 1 && boot.sources === 2, JSON.stringify(boot));
   check('the timer dock lists splits', boot.splits === 3, `splits=${boot.splits}`);
   check('the comparison picker is populated', boot.comparisons >= 2, `options=${boot.comparisons}`);
@@ -110,6 +115,9 @@ try {
     done: document.querySelectorAll('#lsSplits li.done').length,
   }));
   check('the clock advances', parseFloat(running.clock.replace(':', '')) > 0, `clock=${running.clock}`);
+  await page.waitForTimeout(1500);   // let a full stats window elapse
+  const runningFps = await page.evaluate(() => document.getElementById('statFps').textContent);
+  check('a running timer wakes the compositor', Number(runningFps) >= 24, `fps=${runningFps}`);
   check('the split button becomes Split', running.label === 'Split', running.label);
   check('one split is marked done', running.done === 1, `done=${running.done}`);
   check('the next split is highlighted', running.current === 1, `current=${running.current}`);

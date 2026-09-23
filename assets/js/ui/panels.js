@@ -152,6 +152,24 @@ export function initPanels(ctx) {
   // --------------------------------------------------------------- mixer
   const meterNodes = new Map();
 
+  /**
+   * Mirror the mixer into the document so a microphone survives a reload.
+   * Only the description is stored — never the stream, obviously — and the
+   * browser still decides whether it will hand the device back without a
+   * fresh prompt.
+   */
+  function persistMixer() {
+    const strips = mixer.list();
+    store.update((d) => {
+      d.audio.inputs = strips
+        .filter((s) => s.kind === 'mic')
+        .map((s) => ({
+          id: s.id, name: s.name, kind: s.kind, gain: s.gain, muted: s.muted,
+          deviceId: (mixer.strips.get(s.id) || {}).deviceId || '',
+        }));
+    }, { silent: true });
+  }
+
   function renderMixer() {
     const host = $('#mixerList');
     host.innerHTML = '';
@@ -170,18 +188,19 @@ export function initPanels(ctx) {
         class: 'icon mix-mute' + (strip.muted ? ' on' : ''),
         text: strip.muted ? '🔇' : '🔊',
         title: strip.muted ? 'Unmute' : 'Mute',
-        onclick: () => { mixer.setMuted(strip.id, !strip.muted); renderMixer(); },
+        onclick: () => { mixer.setMuted(strip.id, !strip.muted); persistMixer(); renderMixer(); },
       });
       const gain = el('input', { type: 'range', min: 0, max: 1.5, step: 0.01, value: strip.gain });
       gain.addEventListener('input', () => mixer.setGain(strip.id, Number(gain.value)));
+      gain.addEventListener('change', persistMixer);
       const name = el('span', { class: 'mix-name', text: strip.name, title: 'Double-click to rename' });
       name.addEventListener('dblclick', () => {
         const next = prompt('Rename audio input', strip.name);
-        if (next) { mixer.rename(strip.id, next); renderMixer(); }
+        if (next) { mixer.rename(strip.id, next); persistMixer(); renderMixer(); }
       });
       const removeBtn = el('button', {
         class: 'icon', text: '✕', title: 'Remove input',
-        onclick: () => { mixer.removeStrip(strip.id); renderMixer(); },
+        onclick: () => { mixer.removeStrip(strip.id); persistMixer(); renderMixer(); },
       });
       host.appendChild(el('div', { class: 'mix-strip' }, [
         el('div', { class: 'mix-top' }, [name, db]),
@@ -220,7 +239,9 @@ export function initPanels(ctx) {
           try {
             const stream = await openMicrophone(picker.value);
             const label = devices.find((d) => d.deviceId === picker.value);
-            mixer.addStream(stream, { name: (label && label.label) || 'Microphone', kind: 'mic' });
+            const strip = mixer.addStream(stream, { name: (label && label.label) || 'Microphone', kind: 'mic' });
+            if (strip) strip.deviceId = picker.value;
+            persistMixer();
             renderMixer();
             closeModal();
           } catch (e) { toast(e.message, 'err'); }
@@ -290,9 +311,36 @@ export function initPanels(ctx) {
     'mixer-add': addAudioDialog,
   };
 
+  /**
+   * Re-open the microphones the layout remembers. The browser only hands a
+   * device back without prompting when permission is still granted, so a
+   * failure here is normal and gets one quiet line, not an error storm.
+   */
+  async function restoreAudioInputs() {
+    const saved = (store.get().audio.inputs || []).filter((input) => input.kind === 'mic');
+    if (!saved.length) return;
+    let restored = 0;
+    for (const input of saved) {
+      try {
+        const stream = await openMicrophone(input.deviceId);
+        const strip = mixer.addStream(stream, {
+          id: input.id, name: input.name, kind: 'mic',
+          gain: input.gain ?? 1, muted: !!input.muted,
+        });
+        if (strip) strip.deviceId = input.deviceId;
+        restored++;
+      } catch (e) { /* permission not granted yet, or the device is gone */ }
+    }
+    renderMixer();
+    if (restored < saved.length) {
+      toast(`${saved.length - restored} saved audio input${saved.length - restored > 1 ? 's' : ''} could not reopen — add ${saved.length - restored > 1 ? 'them' : 'it'} again with ＋.`);
+    }
+  }
+
   renderScenes();
   renderSources();
   renderMixer();
+  restoreAudioInputs();
 
-  return { actions, renderScenes, renderSources, renderMixer };
+  return { actions, renderScenes, renderSources, renderMixer, persistMixer };
 }

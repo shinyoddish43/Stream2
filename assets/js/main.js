@@ -30,6 +30,7 @@ const ctx = { store, compositor, mixer, output, timer, link, hotkeys, boot };
 async function main() {
   await store.load();
   compositor.attach($('#programCanvas'), $('#previewCanvas'));
+  compositor.needsFrames = () => output.streaming || output.recording;
   compositor.start();
 
   const panels = initPanels(ctx);
@@ -179,12 +180,15 @@ function wireStats() {
   const uptimeNode = $('#statUptime');
   const liveNode = $('#statLive');
 
-  bus.on('compositor:stats', ({ fps, skipped, renderMs }) => {
-    fpsNode.textContent = String(fps);
+  bus.on('compositor:stats', ({ fps, skipped, renderMs, idle }) => {
+    fpsNode.textContent = idle ? 'idle' : String(fps);
+    fpsNode.title = idle
+      ? 'Nothing on the scene is moving, so the compositor is not repainting it. It wakes the moment something does.'
+      : 'Compositor frames per second';
     droppedNode.textContent = String(skipped);
     renderNode.textContent = renderMs.toFixed(1);
     const target = compositor.targetFps();
-    fpsNode.style.color = fps < target * 0.8 ? 'var(--warn)' : '';
+    fpsNode.style.color = !idle && fps < target * 0.8 ? 'var(--warn)' : '';
   });
 
   bus.on('output:bitrate', (kbps) => { bitrateNode.textContent = String(kbps); });

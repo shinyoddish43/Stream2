@@ -24,9 +24,11 @@ foreach ($checks as $label => $c) {
     if (!$c[0] && strpos((string)$c[1], 'optional') === false) $hardFail = true;
 }
 
-if (sv_installed() && !isset($_GET['force'])) {
+if (sv_installed()) {
+    // No bypass: while a config exists this page must never be able to mint a
+    // new owner account, even if the file was left on the server.
     $done = true;
-    $notices[] = 'Already installed. Delete data/config.json to start over.';
+    $notices[] = 'Already installed. To start over, delete data/config.json on the server first.';
 }
 
 if (!$done && $_SERVER['REQUEST_METHOD'] === 'POST') {

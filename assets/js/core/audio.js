@@ -86,6 +86,7 @@ export class Mixer {
       name: meta.name, kind: meta.kind,
       gain: clamp(meta.gain, 0, 2), muted: !!meta.muted,
       peak: 0, rms: 0, stream: meta.stream, element: meta.element,
+      deviceId: meta.deviceId || '',
     };
     this.strips.set(id, strip);
     bus.emit('mixer:changed', this.list());

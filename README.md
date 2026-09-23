@@ -131,7 +131,13 @@ bridge/              LiveSplit Server → WS   data/            your scenes, spl
 - Overlay pages authenticate with a rotatable token so OBS can read the timer
   without holding a login.
 - `data/` ships with an `.htaccess` deny and an empty `index.html`; the
-  installer writes them again in case the upload dropped dotfiles.
+  installer writes them again in case the upload dropped dotfiles. On nginx,
+  where `.htaccess` means nothing, copy `config.sample.php` to `config.php` and
+  point `STUDIO_DATA_DIR` outside the web root.
+- `install.php` refuses to run once a config exists, so a forgotten copy cannot
+  be used to mint a second owner account.
+- Destination URLs are validated as plain `rtmp://` / `rtmps://` addresses on
+  the server before they are ever handed to `ffmpeg`.
 - The relay accepts only signed, short-lived tickets and validates every RTMP
   URL before handing it to `ffmpeg`.
 
@@ -145,7 +151,7 @@ MIT.
 tests/run.sh
 ```
 
-162 assertions across four suites, no dependencies beyond PHP and (optionally)
+168 assertions across four suites, no dependencies beyond PHP and (optionally)
 Node:
 
 | Suite | Covers |
@@ -153,7 +159,7 @@ Node:
 | `tests/timer.test.mjs` | the timer engine: splits, undo/skip, deltas, all five LiveSplit colour rules, golds, PB folding, sum of best, best possible, offsets, external control |
 | `tests/php.test.php` | `.lss` parsing and writing (including an XXE attempt), the flat-file store, stream-key encryption, password hashing |
 | `tests/api.test.sh` | every API route against a real PHP server in a throwaway copy: auth, CSRF, throttling, overlay tokens, splits import/export, key masking, relay-ticket signatures verified independently |
-| `tests/browser.test.mjs` | the studio in headless Chromium: compositing, the timer, every dialog, scenes, studio mode, persistence across a reload, the overlay page — and fails on any console error |
+| `tests/browser.test.mjs` | the studio in headless Chromium: compositing, idle-frame skipping, the timer, every dialog, scenes, studio mode, persistence across a reload, the overlay page — and fails on any console error |
 
 The browser suite skips itself when Playwright is absent, so the project stays
 installable without npm. Point it at an existing install with
