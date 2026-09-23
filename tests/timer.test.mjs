@@ -263,6 +263,50 @@ describe('the snapshot overlays render from', () => {
   it('is JSON-safe', () => assert.ok(JSON.parse(JSON.stringify(snap)).segments.length === 3));
 });
 
+describe('finishing then resetting', () => {
+  // A completed run that is then reset must be recorded once, not twice.
+  const timer = new SpeedrunTimer();
+  timer.load(sampleRun());
+  timer.start();
+  at(timer, 8); timer.split();
+  at(timer, 25); timer.split();
+  at(timer, 50); timer.split();      // finishes
+  const afterFinish = timer.run.history.length;
+  timer.reset(true);
+
+  it('records the attempt once', () => assert.equal(timer.run.history.length, afterFinish));
+  it('keeps the finished time in that record', () => {
+    assert.close(timer.run.history[timer.run.history.length - 1].real, 50);
+  });
+  it('still records an abandoned run on reset', () => {
+    timer.start();
+    at(timer, 9); timer.split();
+    timer.reset(true);
+    const last = timer.run.history[timer.run.history.length - 1];
+    assert.equal(last.real, null);
+    assert.equal(timer.run.history.length, afterFinish + 1);
+  });
+});
+
+describe('un-finishing a run', () => {
+  const timer = new SpeedrunTimer();
+  timer.load(sampleRun());
+  timer.start();
+  at(timer, 8); timer.split();
+  at(timer, 25); timer.split();
+  at(timer, 50); timer.split();      // finishes and records
+  timer.undo();                      // "that was a misclick"
+
+  it('goes back to running', () => assert.equal(timer.phase, PHASE.RUNNING));
+  it('withdraws the record finishing wrote', () => assert.equal(timer.run.history.length, 0));
+  it('keeps the golds that were earned', () => assert.equal(timer.run.segments[0].best, 8));
+  it('records the attempt when it really ends', () => {
+    at(timer, 55); timer.split();
+    assert.equal(timer.run.history.length, 1);
+    assert.close(timer.run.history[0].real, 55);
+  });
+});
+
 describe('countdown source', () => {
   it('shows its configured length before anyone starts it', () => {
     assert.equal(countdownLabel({ minutes: 10, endsAt: 0, prefix: 'Starting in ' }), 'Starting in 10:00');

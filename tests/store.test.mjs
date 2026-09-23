@@ -183,6 +183,59 @@ describe('sources', () => {
   });
 });
 
+describe('loading a document', () => {
+  // migrate() is the gate every stored or imported document passes through.
+  const load = (doc) => {
+    const store = freshStore();
+    store.queueSave = () => {};
+    globalThis.localStorage.setItem('streamstudio.doc.v1', JSON.stringify(doc));
+    return store;
+  };
+
+  it('repairs a canvas of zero pixels', async () => {
+    const store = load({ canvas: { w: 0, h: 0, fps: 0 }, scenes: [{ id: 'a', name: 'A', sources: [] }] });
+    await store.load();
+    // A zeroed canvas is broken, so it should come back as the default, not
+    // as the smallest size the studio tolerates.
+    assert.equal(store.get().canvas.w, 1280);
+    assert.equal(store.get().canvas.h, 720);
+    assert.equal(store.get().canvas.fps, 30);
+  });
+
+  it('caps an absurd canvas rather than trying to allocate it', async () => {
+    const store = load({ canvas: { w: 99999, h: 99999, fps: 999 }, scenes: [{ id: 'a', name: 'A', sources: [] }] });
+    await store.load();
+    assert.ok(store.get().canvas.w <= 3840 && store.get().canvas.fps <= 60, JSON.stringify(store.get().canvas));
+  });
+
+  it('repairs geometry that would break every draw call', async () => {
+    const store = load({ scenes: [{ id: 'a', name: 'A', sources: [
+      { id: 's', type: 'color', x: 'NaN', y: null, w: 0, h: undefined, opacity: 5 },
+    ] }] });
+    await store.load();
+    const item = store.get().scenes[0].sources[0];
+    assert.equal(item.x, 0);
+    assert.equal(item.y, 0);
+    assert.equal(item.w, 640);
+    assert.equal(item.h, 360);
+    assert.equal(item.opacity, 1);
+  });
+
+  it('points activeScene at something real when the file does not', async () => {
+    const store = load({ activeScene: 'gone', previewScene: 'also-gone', scenes: [{ id: 'a', name: 'A', sources: [] }] });
+    await store.load();
+    assert.equal(store.get().activeScene, 'a');
+    assert.equal(store.get().previewScene, 'a');
+  });
+
+  it('survives a corrupted local copy', async () => {
+    const store = freshStore();
+    globalThis.localStorage.setItem('streamstudio.doc.v1', '{not json');
+    await store.load();
+    assert.ok(store.get().scenes.length >= 1);
+  });
+});
+
 describe('studio mode', () => {
   it('edits the program scene when it is off', () => {
     const store = freshStore();

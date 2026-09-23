@@ -27,6 +27,7 @@ export class SpeedrunTimer {
     this.splitTimes = [];      // cumulative seconds, null for skipped splits
     this.external = false;     // true while a LiveSplit bridge drives us
     this.externalTime = 0;
+    this.resultsApplied = false;   // the attempt has already been recorded
     this._lastPublish = 0;
   }
 
@@ -112,6 +113,7 @@ export class SpeedrunTimer {
     this.splitTimes = new Array(this.run.segments.length).fill(null);
     this.startedIso = new Date().toISOString();
     this.phase = PHASE.RUNNING;
+    this.resultsApplied = false;
     this.run.attempts = (this.run.attempts || 0) + 1;
     bus.emit('timer:started', this.snapshot());
     bus.emit('timer:state', this.snapshot());
@@ -140,6 +142,11 @@ export class SpeedrunTimer {
 
   undo() {
     if (this.phase === PHASE.ENDED) {
+      // Un-finishing a run withdraws the record finishing just wrote, so the
+      // attempt is logged once, when it actually ends. Golds and a new PB
+      // stay: those were earned.
+      if (this.resultsApplied && this.run.history.length) this.run.history.pop();
+      this.resultsApplied = false;
       this.phase = PHASE.RUNNING;
       // Rejoin the running clock where the finish left off.
       this.startedAt = performance.now() - (this.endedAt - this.startedAt);
@@ -177,7 +184,9 @@ export class SpeedrunTimer {
 
   /** Reset back to idle; when keepResults is true the attempt is recorded. */
   reset(keepResults = true) {
-    if (keepResults && this.phase !== PHASE.IDLE) {
+    // Finishing already recorded this attempt. Resetting afterwards is how
+    // most runners clear the timer, and it must not log the run twice.
+    if (keepResults && this.phase !== PHASE.IDLE && !this.resultsApplied) {
       this.applyResults(this.phase !== PHASE.ENDED);
       bus.emit('timer:reset', this.snapshot());
     }
@@ -219,6 +228,7 @@ export class SpeedrunTimer {
       }
       this.run.pbTime = finalTime;
     }
+    this.resultsApplied = true;
     const attempt = {
       id: (this.run.attempts || 0),
       started: this.startedIso,

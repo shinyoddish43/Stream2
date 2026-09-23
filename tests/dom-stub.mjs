@@ -19,4 +19,6 @@ globalThis.document = globalThis.document || {
   createElement: () => ({ style: {}, appendChild() {}, addEventListener() {}, setAttribute() {}, remove() {} }),
   addEventListener: () => {},
 };
-globalThis.fetch = globalThis.fetch || (async () => { throw new Error('offline in tests'); });
+// Force-replaced, not defaulted: Node has its own fetch, and a test must not
+// be able to reach the network by accident.
+globalThis.fetch = async () => { throw new Error('offline in tests'); };

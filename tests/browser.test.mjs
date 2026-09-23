@@ -220,6 +220,49 @@ try {
   const reloaded = await page.evaluate(() => document.querySelectorAll('#sceneList .row-item').length);
   check('the layout persists across a reload', reloaded === 6, `scenes=${reloaded}`);
 
+  // Regression: dragging a source on a still scene moved the handles but not
+  // the picture, because the drag path skips the event bus that marks the
+  // canvas dirty.
+  const dragged = await page.evaluate(async () => {
+    const store = window.STUDIO.store;
+    const compositor = window.STUDIO.compositor;
+    // A scene that does not animate: one flat colour block, nothing else.
+    store.update((d) => {
+      const scene = { id: 'sc_drag', name: 'Drag test', sources: [{
+        id: 'sr_drag', type: 'color', name: 'Block', visible: true, locked: false,
+        x: 40, y: 40, w: 200, h: 200, opacity: 1, settings: { color: '#ff0000' },
+      }] };
+      d.scenes.push(scene);
+      d.studioMode = false;
+      d.activeScene = scene.id;
+      d.previewScene = scene.id;
+    });
+    compositor.select('sr_drag');
+    await new Promise((r) => setTimeout(r, 900));      // let it settle into idle
+    // Turning studio mode off through the document alone must be enough: the
+    // panes and the transform layers follow the document, not the checkbox.
+    if (!window.STUDIO.transformLayers.program.enabled) return { skipped: 'program layer not enabled' };
+    const ctx = document.getElementById('programCanvas').getContext('2d');
+    // (200,200) sits inside the block where it starts and outside it after the
+    // drag moves it up and left, so it is the pixel that proves a repaint.
+    const before = { probe: ctx.getImageData(200, 200, 1, 1).data[0] };
+
+    // Move it the way a pointer drag does, through the transform layer.
+    const layer = window.STUDIO.transformLayers.program;
+    const item = store.editScene().sources[0];
+    layer.drag = { mode: 'move', item, start: { x: 100, y: 100 }, box: { ...item } };
+    layer.onMove({ clientX: 0, clientY: 0, ctrlKey: true,
+      target: document.getElementById('programCanvas') });
+    await new Promise((r) => setTimeout(r, 400));
+    const after = { probe: ctx.getImageData(200, 200, 1, 1).data[0] };
+    layer.drag = null;
+    return { before, after, moved: item.x !== 40 || item.y !== 40, box: { x: item.x, y: item.y } };
+  });
+  check('the panes follow studio mode however it changed', !dragged.skipped, JSON.stringify(dragged));
+  check('a drag moves the source', dragged.moved, JSON.stringify(dragged));
+  check('and the still scene repaints to match',
+    dragged.before.probe === 255 && dragged.after.probe !== 255, JSON.stringify(dragged));
+
   // Regression: removing an audio strip used to stop every track on the
   // stream it came from, which killed a display capture's video with it.
   const audio = await page.evaluate(async () => {

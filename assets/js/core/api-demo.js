@@ -23,9 +23,15 @@ const write = (name, value) => {
 const fail = (message) => { throw new Error(message); };
 
 // Overlay pages opened from a demo follow the timer over this channel; there
-// is no server to poll.
-let channel = null;
-try { channel = new BroadcastChannel('streamstudio-timer'); } catch (e) {}
+// is no server to poll. Opened on first use, not at import: this module is
+// pulled in by api.js in every mode, and an unused channel is a live handle.
+let channel;
+function timerChannel() {
+  if (channel === undefined) {
+    try { channel = new BroadcastChannel('streamstudio-timer'); } catch (e) { channel = null; }
+  }
+  return channel;
+}
 
 export const demoApi = {
   health: async () => ({ ok: true, app: 'stream-studio', demo: true, installed: true }),
@@ -40,7 +46,8 @@ export const demoApi = {
 
   publishState: async (state) => {
     write('state', state);
-    if (channel) { try { channel.postMessage(state); } catch (e) {} }
+    const bus = timerChannel();
+    if (bus) { try { bus.postMessage(state); } catch (e) {} }
     return { ok: true, rev: 0 };
   },
   readState: async () => ({ ok: true, state: read('state', { rev: 0 }), rev: 0 }),

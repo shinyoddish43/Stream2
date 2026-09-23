@@ -90,7 +90,15 @@ export class DocStore {
       const res = await api.loadConfig();
       if (res.config && res.config.scenes && res.config.scenes.length) {
         const remote = migrate(res.config);
-        if ((remote.rev | 0) >= (this.doc.rev | 0)) this.doc = remote;
+        // Strictly newer wins. At the same revision the local copy may carry
+        // edits made while the connection was down, and taking the server's
+        // copy would throw them away without a word.
+        if ((remote.rev | 0) > (this.doc.rev | 0)) {
+          this.doc = remote;
+        } else if (differs(this.doc, remote)) {
+          this.dirty = true;
+          this.queueSave();
+        }
       }
     } catch (e) {
       this.lastError = e.message;
@@ -224,10 +232,44 @@ export class DocStore {
   }
 }
 
+/** True when two documents differ in anything but bookkeeping. */
+function differs(a, b) {
+  const strip = (doc) => {
+    const copy = Object.assign({}, doc);
+    delete copy.rev;
+    delete copy.savedAt;
+    return JSON.stringify(copy);
+  };
+  return strip(a) !== strip(b);
+}
+
+/**
+ * A number from a stored document. Anything unusable falls back to the
+ * default rather than being clamped to a bound — a canvas written as 0 is a
+ * broken value, not a request for the smallest one we allow.
+ */
+const num = (value, fallback, min, max) => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  if (n < min || n > max) return Math.min(max, Math.max(min, n));
+  return n;
+};
+
+const size = (value, fallback, min, max) => {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(max, Math.max(min, n));
+};
+
 function migrate(doc) {
   const base = defaultDoc();
   const out = Object.assign({}, base, doc);
   out.canvas = Object.assign({}, base.canvas, doc.canvas);
+  // A hand-edited or imported document must not be able to produce a canvas
+  // of zero pixels, or geometry that makes every drawImage throw.
+  out.canvas.w = Math.round(size(out.canvas.w, base.canvas.w, 160, 3840));
+  out.canvas.h = Math.round(size(out.canvas.h, base.canvas.h, 120, 2160));
+  out.canvas.fps = Math.round(size(out.canvas.fps, base.canvas.fps, 1, 60));
   out.output = Object.assign({}, base.output, doc.output);
   out.timer = Object.assign({}, base.timer, doc.timer);
   out.timer.hotkeys = Object.assign({}, base.timer.hotkeys, (doc.timer || {}).hotkeys);
@@ -236,9 +278,18 @@ function migrate(doc) {
   out.transition = Object.assign({}, base.transition, doc.transition);
   if (!Array.isArray(out.scenes) || !out.scenes.length) out.scenes = base.scenes;
   out.scenes.forEach((scene) => {
-    scene.sources = (scene.sources || []).map((s) => Object.assign(
-      { visible: true, locked: false, opacity: 1, x: 0, y: 0, w: 640, h: 360, settings: {} }, s
-    ));
+    scene.sources = (scene.sources || []).map((source) => {
+      const item = Object.assign(
+        { visible: true, locked: false, opacity: 1, x: 0, y: 0, w: 640, h: 360, settings: {} }, source
+      );
+      item.x = num(item.x, 0, -20000, 20000);
+      item.y = num(item.y, 0, -20000, 20000);
+      item.w = size(item.w, 640, 1, 20000);
+      item.h = size(item.h, 360, 1, 20000);
+      item.opacity = num(item.opacity, 1, 0, 1);
+      if (!item.settings || typeof item.settings !== 'object') item.settings = {};
+      return item;
+    });
   });
   if (!out.scenes.find((s) => s.id === out.activeScene)) out.activeScene = out.scenes[0].id;
   if (!out.scenes.find((s) => s.id === out.previewScene)) out.previewScene = out.activeScene;

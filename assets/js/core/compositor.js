@@ -439,12 +439,17 @@ export class TransformLayer {
       item.w = Math.max(16, Math.round(w));
       item.h = Math.max(16, Math.round(h));
     }
+    // This path skips the event bus on purpose — it runs on every pointer
+    // move — so it has to mark the canvas dirty itself, or a still scene
+    // repaints only once the drag ends.
+    this.compositor.dirty = true;
     this.render();
   }
 
   onUp() {
     if (!this.drag) return;
     this.drag = null;
+    this.compositor.dirty = true;
     this.store.update(() => {}, { silent: true });   // persist, no full redraw
     bus.emit('source:transformed');
   }

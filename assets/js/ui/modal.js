@@ -6,6 +6,12 @@ import { $, el } from '../core/util.js';
 let current = null;
 
 export function openModal({ title, body, footer = [], wide = false, onClose }) {
+  // Replacing an open dialog still closes it, so its cleanup has to run.
+  if (current && current.onClose) {
+    const previous = current.onClose;
+    current = null;
+    try { previous(); } catch (e) { console.error('[modal] close handler', e); }
+  }
   const root = $('#modalRoot');
   const bodyHost = $('#modalBody');
   const footHost = $('#modalFoot');

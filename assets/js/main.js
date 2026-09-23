@@ -123,6 +123,11 @@ function wireMenu(panels, timerPanel) {
   });
 
   bus.on('ui:open-splits', () => openSplits(ctx));
+  // Studio mode can change without the checkbox being clicked — importing a
+  // scene collection, for one — and the panes have to follow it.
+  bus.on('doc:changed', () => {
+    if (!!store.get().studioMode !== lastStudioMode) applyStudioMode();
+  });
   bus.on('ui:open-history', () => openHistory(ctx));
 
   // The shell varies — a static demo build has no account to sign out of — so
@@ -170,8 +175,13 @@ function applyTheme() {
   document.documentElement.dataset.theme = store.get().theme || 'dark';
 }
 
+let lastStudioMode = null;
+
 function applyStudioMode() {
   const on = !!store.get().studioMode;
+  lastStudioMode = on;
+  const toggle = $('#studioModeToggle');
+  if (toggle) toggle.checked = on;
   $('#viewPreview').hidden = !on;
   $('#btnTransition').disabled = !on;
   $('#btnTransition').title = on ? 'Send preview to program' : 'Turn on studio mode to use this';
