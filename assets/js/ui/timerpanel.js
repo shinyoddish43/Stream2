@@ -22,6 +22,12 @@ export function initTimerPanel(ctx) {
   let lastPublish = 0;
   let publishing = false;
 
+  // Overlays open in the same browser get the state directly — no request, no
+  // poll interval, no server round trip. The HTTP path below stays for OBS on
+  // another machine.
+  let channel = null;
+  try { channel = new BroadcastChannel('streamstudio-timer'); } catch (e) { /* older browser */ }
+
   function buildRows() {
     const snap = timer.snapshot();
     nodes.splits.innerHTML = '';
@@ -126,6 +132,7 @@ export function initTimerPanel(ctx) {
   /** Mirror the timer to the server so overlay pages can follow it. */
   async function maybePublish(snap) {
     if (!store.get().timer.publishState) return;
+    if (channel) { try { channel.postMessage(snap); } catch (e) { /* closed tab */ } }
     const now = performance.now();
     if (publishing || now - lastPublish < 1000 / PUBLISH_HZ) return;
     const signature = snap.phase + '|' + snap.currentSplit + '|' + Math.round(snap.time * 10) + '|' + snap.game;

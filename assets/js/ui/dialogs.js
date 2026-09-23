@@ -337,8 +337,12 @@ export function openSettings(ctx) {
   server.appendChild(field('Relay URL', relayUrl));
   server.appendChild(button('Save server settings', { class: 'btn primary', onclick: async () => {
     try {
-      const res = await api.saveSettings({ relay_url: relayUrl.value.trim(), site_name: siteName.value.trim() });
+      await api.saveSettings({ relay_url: relayUrl.value.trim(), site_name: siteName.value.trim() });
       ctx.boot.relayUrl = relayUrl.value.trim();
+      ctx.boot.siteName = siteName.value.trim();
+      document.title = ctx.boot.siteName;
+      const brand = document.querySelector('.brand strong');
+      if (brand) brand.textContent = ctx.boot.siteName;
       toast('Saved', 'ok');
     } catch (e) { toast(e.message, 'err'); }
   } }));
@@ -433,7 +437,7 @@ export async function openDestinations(ctx) {
     const row = el('tr', {}, [
       el('td', {}, [enabled]), el('td', {}, [name]), el('td', {}, [service]),
       el('td', {}, [url]), el('td', {}, [key]),
-      el('td', {}, [button('✕', { onclick: () => row.remove() })]),
+      el('td', {}, [button('✕', { 'aria-label': 'Remove this destination', onclick: () => row.remove() })]),
     ]);
     row._read = () => ({
       id: dest.id, enabled: enabled.checked, name: name.value, service: service.value,
@@ -512,7 +516,7 @@ export async function openSplits(ctx) {
             const run = (await api.getSplits(entry.id)).run;
             download(`${run.game || 'splits'} - ${run.category || ''}.lss`.trim(), buildLss(run), 'application/xml');
           } }),
-          button('✕', { class: 'btn danger', onclick: async () => {
+          button('✕', { class: 'btn danger', 'aria-label': 'Delete these splits', onclick: async () => {
             if (!confirm('Delete these splits?')) return;
             await api.deleteSplits(entry.id);
             refresh();
@@ -582,9 +586,9 @@ export function openSplitEditor(ctx, run, onSaved) {
       el('td', { class: 'num' }, [pb]),
       el('td', { class: 'num' }, [best]),
       el('td', {}, [
-        button('↑', { onclick: () => { const prev = row.previousElementSibling; if (prev) tbody.insertBefore(row, prev); renumber(); } }),
-        button('↓', { onclick: () => { const next = row.nextElementSibling; if (next) tbody.insertBefore(next, row); renumber(); } }),
-        button('✕', { onclick: () => { row.remove(); renumber(); } }),
+        button('↑', { 'aria-label': 'Move this segment up', onclick: () => { const prev = row.previousElementSibling; if (prev) tbody.insertBefore(row, prev); renumber(); } }),
+        button('↓', { 'aria-label': 'Move this segment down', onclick: () => { const next = row.nextElementSibling; if (next) tbody.insertBefore(next, row); renumber(); } }),
+        button('✕', { 'aria-label': 'Delete this segment', onclick: () => { row.remove(); renumber(); } }),
       ]),
     ]);
     row._read = () => ({
@@ -723,11 +727,13 @@ export function openHotkeys(ctx) {
       el('td', { text: label }),
       el('td', {}, [value]),
       el('td', {}, [
-        button('Rebind', { onclick: async () => {
+        button('Rebind', { onclick: async (event) => {
+          const previous = value.textContent;
           value.textContent = 'press a key…';
           const code = await hotkeys.capture();
+          if (code === '') { value.textContent = previous; return; }   // cancelled
           store.update((d) => { d.timer.hotkeys[action] = code; });
-          value.textContent = code || 'unbound';
+          value.textContent = code;
           hotkeys.setBindings(store.get().timer.hotkeys);
         } }),
         button('Clear', { onclick: () => {
@@ -740,7 +746,12 @@ export function openHotkeys(ctx) {
   }
   table.appendChild(tbody);
   body.appendChild(table);
-  openModal({ title: 'Hotkeys', body, footer: [button('Close', { class: 'btn primary', onclick: closeModal })] });
+  openModal({
+    title: 'Hotkeys',
+    body,
+    footer: [button('Close', { class: 'btn primary', onclick: closeModal })],
+    onClose: () => hotkeys.cancelCapture(),
+  });
 }
 
 
@@ -842,6 +853,13 @@ export function openHelp(ctx) {
       <li>Low power mode halves the frame rate and turns off image smoothing.</li>
       <li>Keep this tab visible; a background tab is throttled by the browser (the compositor falls back to a timer, but frames get coarse).</li>
       <li>Prefer the built-in timer source over a browser-source overlay: it is one draw call, not a second page being rendered.</li>
+    </ul>
+    <h3>Keyboard</h3>
+    <ul>
+      <li><span class="kbd">Ctrl</span> + <span class="kbd">Shift</span> + <span class="kbd">1…9</span> — switch to that scene (cue it in studio mode). Plain Ctrl+number belongs to the browser's tab switcher.</li>
+      <li>Timer hotkeys are yours to set under <b>Hotkeys</b>; the defaults are the LiveSplit numpad layout.</li>
+      <li>Dragging a source: hold <span class="kbd">Shift</span> to keep its aspect ratio, <span class="kbd">Ctrl</span> to place it pixel-exact.</li>
+      <li><span class="kbd">Esc</span> closes any dialog.</li>
     </ul>
     <h3>The speedrun timer</h3>
     <ul>

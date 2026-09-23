@@ -6,6 +6,8 @@ let failed = 0;
 const failures = [];
 let group = '';
 
+const pending = [];
+
 export function describe(name, fn) {
   group = name;
   fn();
@@ -14,14 +16,23 @@ export function describe(name, fn) {
 
 export function it(name, fn) {
   const label = group ? `${group} › ${name}` : name;
-  try {
-    fn();
-    passed++;
-    process.stdout.write('.');
-  } catch (e) {
+  const fail = (e) => {
     failed++;
-    failures.push(`${label}\n    ${e.message}`);
+    failures.push(`${label}\n    ${e && e.message ? e.message : e}`);
     process.stdout.write('x');
+  };
+  const pass = () => { passed++; process.stdout.write('.'); };
+  try {
+    const result = fn();
+    // An async test used to "pass" the moment it started, because nothing
+    // awaited it and its rejection went to the void. Track the promise.
+    if (result && typeof result.then === 'function') {
+      pending.push(result.then(pass, fail));
+    } else {
+      pass();
+    }
+  } catch (e) {
+    fail(e);
   }
 }
 
@@ -50,7 +61,8 @@ export const assert = {
 
 const format = (v) => (typeof v === 'object' ? JSON.stringify(v) : String(v));
 
-export function report(title) {
+export async function report(title) {
+  await Promise.all(pending);
   process.stdout.write('\n');
   for (const failure of failures) console.log('  FAIL ' + failure);
   console.log(`${title}: ${passed} passed, ${failed} failed`);

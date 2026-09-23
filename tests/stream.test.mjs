@@ -176,6 +176,32 @@ try {
     check('the stream key was applied to the RTMP URL', files[0].includes('testkey'), files[0]);
   }
 
+  // Regression: one recorder handle used to serve both the file recording and
+  // the relay, so hitting record mid-stream tore the stream's encoder out.
+  const sizeBefore = readFileSync(join(outDir, readdirSync(outDir)[0])).length;
+  await page.click('#btnRecord');
+  await page.waitForTimeout(3000);
+  const both = await page.evaluate(() => ({
+    recording: window.STUDIO.output.recording,
+    streaming: window.STUDIO.output.streaming,
+    separateRecorders: window.STUDIO.output.fileRecorder !== window.STUDIO.output.relayRecorder
+      && !!window.STUDIO.output.fileRecorder && !!window.STUDIO.output.relayRecorder,
+  }));
+  check('recording and streaming run together', both.recording && both.streaming, JSON.stringify(both));
+  check('each output has its own encoder', both.separateRecorders, JSON.stringify(both));
+  const sizeDuring = readFileSync(join(outDir, readdirSync(outDir)[0])).length;
+  check('the relay keeps receiving while recording', sizeDuring > sizeBefore, `${sizeBefore} → ${sizeDuring}`);
+
+  await page.click('#btnRecord');
+  await page.waitForTimeout(1500);
+  const afterRecord = await page.evaluate(() => ({
+    recording: window.STUDIO.output.recording,
+    streaming: window.STUDIO.output.streaming,
+  }));
+  check('stopping the recording leaves the stream up', !afterRecord.recording && afterRecord.streaming, JSON.stringify(afterRecord));
+  const sizeAfter = readFileSync(join(outDir, readdirSync(outDir)[0])).length;
+  check('and the relay is still being fed', sizeAfter > sizeDuring, `${sizeDuring} → ${sizeAfter}`);
+
   // --- the relay dies mid-broadcast: the studio must rebuild the session,
   // not silently drop the streamer off air.
   relay.kill();

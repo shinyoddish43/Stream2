@@ -9,6 +9,10 @@ echo "── timer engine"
 if command -v node >/dev/null 2>&1; then node tests/timer.test.mjs || STATUS=1
 else echo "skipped (node not installed)"; fi
 
+echo "── document store"
+if command -v node >/dev/null 2>&1; then node tests/store.test.mjs || STATUS=1
+else echo "skipped (node not installed)"; fi
+
 echo "── php"
 php tests/php.test.php || STATUS=1
 

@@ -54,7 +54,10 @@ export class Mixer {
     const stripId = id || uid('au');
     this.removeStrip(stripId);
     const source = this.ctx.createMediaStreamSource(new MediaStream([tracks[0]]));
-    return this.wire(stripId, source, { name, kind, gain, muted, stream });
+    // Own the audio track only. A display capture hands us one stream holding
+    // both its video and its audio, and stopping the video with it would kill
+    // the screen share the moment someone removed the sound.
+    return this.wire(stripId, source, { name, kind, gain, muted, stream, tracks: [tracks[0]] });
   }
 
   /** Add a <video>/<audio> element's output as a strip. */
@@ -86,6 +89,7 @@ export class Mixer {
       name: meta.name, kind: meta.kind,
       gain: clamp(meta.gain, 0, 2), muted: !!meta.muted,
       peak: 0, rms: 0, stream: meta.stream, element: meta.element,
+      tracks: meta.tracks || [],
       deviceId: meta.deviceId || '',
     };
     this.strips.set(id, strip);
@@ -97,7 +101,7 @@ export class Mixer {
     const strip = this.strips.get(id);
     if (!strip) return;
     try { strip.node.disconnect(); strip.gainNode.disconnect(); strip.analyser.disconnect(); } catch (e) {}
-    if (strip.stream) for (const track of strip.stream.getTracks()) track.stop();
+    for (const track of strip.tracks) track.stop();
     this.strips.delete(id);
     bus.emit('mixer:changed', this.list());
   }

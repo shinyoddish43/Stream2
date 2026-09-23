@@ -36,7 +36,8 @@ export class OutputManager {
     this.compositor = compositor;
     this.mixer = mixer;
     this.store = store;
-    this.recorder = null;
+    this.fileRecorder = null;    // writes a file for the user
+    this.relayRecorder = null;   // feeds the relay socket
     this.recording = false;
     this.streaming = false;
     this.chunks = [];
@@ -102,7 +103,7 @@ export class OutputManager {
     this.writeQueue = Promise.resolve();
     this.warnedMemory = false;
     try {
-      this.recorder = new MediaRecorder(stream, {
+      this.fileRecorder = new MediaRecorder(stream, {
         mimeType,
         videoBitsPerSecond: (doc.output.bitrate || 2500) * 1000,
         audioBitsPerSecond: (doc.output.audioBitrate || 128) * 1000,
@@ -111,7 +112,7 @@ export class OutputManager {
       toast('Recorder refused those settings: ' + e.message, 'err');
       return;
     }
-    this.recorder.ondataavailable = (event) => {
+    this.fileRecorder.ondataavailable = (event) => {
       if (!event.data || !event.data.size) return;
       this.bytes += event.data.size;
       this.tickBitrate(event.data.size);
@@ -129,9 +130,9 @@ export class OutputManager {
         toast('Recording is over 512 MB in memory. Stop and save soon, or use a browser that supports saving straight to disk.', 'err');
       }
     };
-    this.recorder.onstop = () => this.finishRecording(mimeType);
-    this.recorder.onerror = (event) => toast('Recorder error: ' + (event.error && event.error.name), 'err');
-    this.recorder.start(1000);
+    this.fileRecorder.onstop = () => this.finishRecording(mimeType);
+    this.fileRecorder.onerror = (event) => toast('Recorder error: ' + (event.error && event.error.name), 'err');
+    this.fileRecorder.start(1000);
     this.recording = true;
     this.startedAt = Date.now();
     bus.emit('output:state', this.state());
@@ -139,9 +140,9 @@ export class OutputManager {
   }
 
   stopRecording() {
-    if (!this.recording || !this.recorder) return;
+    if (!this.recording || !this.fileRecorder) return;
     this.recording = false;
-    try { this.recorder.stop(); } catch (e) {}
+    try { this.fileRecorder.stop(); } catch (e) {}
     bus.emit('output:state', this.state());
   }
 
@@ -156,10 +157,10 @@ export class OutputManager {
       } catch (e) {
         toast('Could not close the recording file: ' + e.message, 'err');
       }
-      this.recorder = null;
+      this.fileRecorder = null;
       return;
     }
-    if (!this.chunks.length) return;
+    if (!this.chunks.length) { this.fileRecorder = null; return; }
     const doc = this.store.get();
     const extension = mimeType.includes('mp4') ? 'mp4' : 'webm';
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -167,7 +168,7 @@ export class OutputManager {
     download(`${doc.output.recordName || 'stream'}-${stamp}.${extension}`, blob, mimeType);
     toast(`Recording saved (${fmtBytes(blob.size)})`, 'ok');
     this.chunks = [];
-    this.recorder = null;
+    this.fileRecorder = null;
   }
 
   // ------------------------------------------------------------------ WHIP
@@ -246,12 +247,12 @@ export class OutputManager {
       if (this.streaming && this.ws === ws) this.scheduleReconnect();
     });
 
-    this.recorder = new MediaRecorder(stream, {
+    this.relayRecorder = new MediaRecorder(stream, {
       mimeType,
       videoBitsPerSecond: (doc.output.bitrate || 2500) * 1000,
       audioBitsPerSecond: (doc.output.audioBitrate || 128) * 1000,
     });
-    this.recorder.ondataavailable = async (event) => {
+    this.relayRecorder.ondataavailable = async (event) => {
       if (!event.data || !event.data.size || ws.readyState !== WebSocket.OPEN) return;
       // Backpressure: if the socket is congested, drop the chunk rather than
       // buffering the browser into a swap death spiral.
@@ -261,7 +262,7 @@ export class OutputManager {
     };
     // 250 ms chunks keep glass-to-glass latency reasonable without flooding
     // the socket with tiny frames.
-    this.recorder.start(250);
+    this.relayRecorder.start(250);
   }
 
   /**
@@ -300,9 +301,9 @@ export class OutputManager {
 
   /** Drop the socket and recorder without ending the broadcast. */
   teardownRelaySockets() {
-    if (this.recorder) {
-      try { this.recorder.ondataavailable = null; this.recorder.stop(); } catch (e) {}
-      this.recorder = null;
+    if (this.relayRecorder) {
+      try { this.relayRecorder.ondataavailable = null; this.relayRecorder.stop(); } catch (e) {}
+      this.relayRecorder = null;
     }
     if (this.ws) {
       try { this.ws.close(); } catch (e) {}
@@ -315,7 +316,7 @@ export class OutputManager {
     this.reconnectHandle = null;
     this.reconnecting = false;
     this.reconnectAttempt = 0;
-    if (this.recorder) { try { this.recorder.stop(); } catch (e) {} this.recorder = null; }
+    if (this.relayRecorder) { try { this.relayRecorder.stop(); } catch (e) {} this.relayRecorder = null; }
     if (this.ws) {
       try {
         if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: 'stop' }));
@@ -358,7 +359,7 @@ export class OutputManager {
     const mode = this.store.get().output.mode;
     if (mode === 'whip') await this.stopWhip();
     else if (mode === 'relay') this.stopRelay();
-    else this.stopRecording();
+    else this.stopRecording();   // in record mode the stream *is* the recording
     this.stopStats();
     bus.emit('output:state', this.state());
   }

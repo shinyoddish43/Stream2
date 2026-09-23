@@ -135,7 +135,12 @@
   // Same browser, same profile: BroadcastChannel is instant and free.
   try {
     var channel = new BroadcastChannel('streamstudio-timer');
-    channel.onmessage = function (event) { if (event.data && event.data.segments) { lastLocal = Date.now(); render(event.data); } };
+    channel.onmessage = function (event) {
+      if (!event.data || !event.data.segments) return;
+      lastLocal = Date.now();
+      document.body.dataset.source = 'channel';
+      render(event.data);
+    };
   } catch (e) {}
   var lastLocal = 0;
 
@@ -149,7 +154,11 @@
       .then(function (res) { return res.json(); })
       .then(function (data) {
         failures = 0;
-        if (data && data.state && data.state.segments) { rev = data.rev; render(data.state); }
+        if (data && data.state && data.state.segments) {
+          rev = data.rev;
+          document.body.dataset.source = 'poll';
+          render(data.state);
+        }
         setTimeout(poll, 60);
       })
       .catch(function () {
@@ -161,12 +170,6 @@
   }
   poll();
 
-  // Local smoothing: interpolate the clock between updates so it never looks
-  // like it is stuttering at the poll rate.
-  var last = null;
-  setInterval(function () {
-    // Intentionally cheap: only the clock text is touched here.
-  }, 1000);
 })();
 </script>
 </body>

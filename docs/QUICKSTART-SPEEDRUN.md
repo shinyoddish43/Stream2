@@ -51,7 +51,10 @@ it. Click a strip name to rename it.
 **Hotkeys** in the menu bar. The defaults are Numpad 1 / 3 / 8 / 2 / 5 for
 split, reset, undo, skip, pause — the LiveSplit layout.
 
-They only fire while the studio tab has focus. If you play full-screen, you
+Scenes switch with **Ctrl+Shift+1…9** (plain Ctrl+number is the browser's own
+tab switcher and a page cannot take it back).
+
+Timer hotkeys only fire while the studio tab has focus. If you play full-screen, you
 have two options:
 
 - **⧉** in the timer dock pops the timer into its own small window; keep it on

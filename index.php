@@ -52,7 +52,10 @@ $boot = [
   <section class="viewers">
     <figure class="view" id="viewPreview" hidden>
       <figcaption>Preview</figcaption>
-      <div class="canvas-holder"><canvas id="previewCanvas" width="1280" height="720"></canvas></div>
+      <div class="canvas-holder" id="previewHolder">
+        <canvas id="previewCanvas" width="1280" height="720"></canvas>
+        <div class="edit-layer" id="previewEditLayer" aria-hidden="true"></div>
+      </div>
     </figure>
     <figure class="view program">
       <figcaption id="programLabel">Program</figcaption>

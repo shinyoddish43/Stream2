@@ -31,6 +31,9 @@ jobs:
       - name: Timer engine tests
         run: node tests/timer.test.mjs
 
+      - name: Document store tests
+        run: node tests/store.test.mjs
+
       - name: PHP tests
         run: php tests/php.test.php
 

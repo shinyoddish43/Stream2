@@ -65,7 +65,7 @@ export function defaultDoc() {
   };
 }
 
-class DocStore {
+export class DocStore {
   constructor() {
     this.doc = defaultDoc();
     this.dirty = false;
@@ -216,7 +216,10 @@ class DocStore {
       const i = scene.sources.findIndex((s) => s.id === sourceId);
       if (i < 0) return;
       const [item] = scene.sources.splice(i, 1);
-      scene.sources.splice(Math.max(0, Math.min(scene.sources.length, targetIndex)), 0, item);
+      // targetIndex counts positions in the list before the item was pulled
+      // out, so dropping it further forward needs one taken back off.
+      const at = i < targetIndex ? targetIndex - 1 : targetIndex;
+      scene.sources.splice(Math.max(0, Math.min(scene.sources.length, at)), 0, item);
     });
   }
 }

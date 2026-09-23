@@ -73,7 +73,10 @@ try {
     executablePath,
     args: ['--no-sandbox', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'],
   });
-  const page = await browser.newPage({ viewport: { width: 1500, height: 860 } });
+  // An explicit context, so the overlay page later can share it — pages in
+  // separate contexts cannot see each other's BroadcastChannel.
+  const context = await browser.newContext({ viewport: { width: 1500, height: 860 } });
+  const page = await context.newPage();
   page.setDefaultTimeout(8000);
   const errors = [];
   page.on('console', (m) => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
@@ -217,6 +220,69 @@ try {
   const reloaded = await page.evaluate(() => document.querySelectorAll('#sceneList .row-item').length);
   check('the layout persists across a reload', reloaded === 6, `scenes=${reloaded}`);
 
+  // Regression: removing an audio strip used to stop every track on the
+  // stream it came from, which killed a display capture's video with it.
+  const audio = await page.evaluate(async () => {
+    const { mixer } = await import('./assets/js/core/audio.js');
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 32;
+    canvas.getContext('2d').fillRect(0, 0, 32, 32);
+    const stream = canvas.captureStream(5);          // stands in for a screen share
+    const ctx = new AudioContext();
+    const destination = ctx.createMediaStreamDestination();
+    ctx.createOscillator().connect(destination);
+    stream.addTrack(destination.stream.getAudioTracks()[0]);
+    mixer.addStream(stream, { id: 'test-strip', name: 'Test' });
+    const before = stream.getVideoTracks()[0].readyState;
+    mixer.removeStrip('test-strip');
+    return {
+      before,
+      videoAfter: stream.getVideoTracks()[0].readyState,
+      audioAfter: stream.getAudioTracks()[0].readyState,
+    };
+  });
+  check('removing an audio strip leaves the video capture running',
+    audio.before === 'live' && audio.videoAfter === 'live', JSON.stringify(audio));
+  check('removing an audio strip does stop its own audio track',
+    audio.audioAfter === 'ended', JSON.stringify(audio));
+
+  // Regression: in studio mode the handles sat on the program canvas but
+  // edited the preview scene.
+  const layers = await page.evaluate(() => {
+    const on = window.STUDIO.store.get().studioMode;
+    return {
+      on,
+      program: document.getElementById('editLayer').classList.contains('active'),
+      preview: document.getElementById('previewEditLayer').classList.contains('active'),
+    };
+  });
+  check('editing follows the canvas that shows the edited scene',
+    layers.on ? (layers.preview && !layers.program) : (layers.program && !layers.preview), JSON.stringify(layers));
+
+  // Regression: a transition in studio mode left preview and program on the
+  // same scene instead of swapping them.
+  const swap = await page.evaluate(async () => {
+    const d = window.STUDIO.store.get();
+    const [a, b] = d.scenes;
+    window.STUDIO.store.update((doc) => { doc.studioMode = true; doc.activeScene = a.id; doc.previewScene = b.id; });
+    document.getElementById('btnTransition').click();
+    await new Promise((r) => setTimeout(r, 900));
+    const after = window.STUDIO.store.get();
+    return { program: after.activeScene === b.id, preview: after.previewScene === a.id };
+  });
+  check('a studio-mode transition puts the cued scene on air', swap.program, JSON.stringify(swap));
+  check('and cues up what was on air', swap.preview, JSON.stringify(swap));
+
+  // Scene hotkeys: Ctrl+Shift+N, because Ctrl+N belongs to the browser.
+  const hotkey = await page.evaluate(() => {
+    window.STUDIO.store.update((d) => { d.studioMode = false; d.activeScene = d.scenes[0].id; });
+    return window.STUDIO.store.get().scenes[2].id;
+  });
+  await page.keyboard.press('Control+Shift+Digit3');
+  await page.waitForTimeout(700);
+  const switched = await page.evaluate(() => window.STUDIO.store.get().activeScene);
+  check('Ctrl+Shift+3 switches to the third scene', switched === hotkey, `${switched} vs ${hotkey}`);
+
   // Theme switching touches the interface only.
   const themed = await page.evaluate(async () => {
     window.STUDIO.store.update((d) => { d.theme = 'light'; });
@@ -242,17 +308,22 @@ try {
   await page.click('#btnSplit');
   await page.waitForTimeout(1200);
   const token = await page.evaluate(() => window.STUDIO_BOOT.overlayToken);
-  const overlay = await browser.newPage();
+  // Same context as the studio: a BroadcastChannel does not cross Playwright's
+  // isolated contexts, and neither would two separate browser profiles.
+  const overlay = await context.newPage();
   await overlay.goto(`${BASE}/overlay/timer.html?token=${token}`);
   await overlay.waitForTimeout(3000);
   const overlayState = await overlay.evaluate(() => ({
     rows: document.querySelectorAll('#splits li').length,
     clock: document.getElementById('clock').textContent,
     offline: !document.getElementById('offline').hidden,
+    source: document.body.dataset.source,
   }));
   check('the overlay renders the splits', overlayState.rows === 3, `rows=${overlayState.rows}`);
   check('the overlay clock follows the run', overlayState.clock !== '0.00' && overlayState.clock !== '0:00', overlayState.clock);
   check('the overlay is not stuck offline', !overlayState.offline);
+  check('an overlay in the same browser is fed directly, not by polling',
+    overlayState.source === 'channel', `updated via ${overlayState.source}`);
 
   check('no console or page errors', errors.length === 0, errors.join('\n    '));
 } catch (e) {

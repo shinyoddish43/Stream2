@@ -364,6 +364,7 @@ export class TransformLayer {
     this.compositor = compositor;
     this.sceneGetter = sceneGetter;
     this.drag = null;
+    this.enabled = true;
     this.layer.classList.add('active');
     this.layer.addEventListener('pointerdown', (e) => this.onDown(e));
     window.addEventListener('pointermove', (e) => this.onMove(e));
@@ -381,7 +382,16 @@ export class TransformLayer {
     return { x: (event.clientX - rect.left) * scaleX, y: (event.clientY - rect.top) * scaleY, rect, scaleX, scaleY };
   }
 
+  /** Only the canvas showing the scene being edited takes pointer input. */
+  setEnabled(enabled) {
+    this.enabled = !!enabled;
+    this.layer.classList.toggle('active', this.enabled);
+    if (!this.enabled) { this.drag = null; this.layer.innerHTML = ''; }
+    else this.render();
+  }
+
   onDown(event) {
+    if (!this.enabled) return;
     const scene = this.sceneGetter();
     if (!scene) return;
     const pos = this.toCanvas(event);
@@ -406,7 +416,7 @@ export class TransformLayer {
   }
 
   onMove(event) {
-    if (!this.drag) return;
+    if (!this.drag || !this.enabled) return;
     const pos = this.toCanvas(event);
     const dx = pos.x - this.drag.start.x;
     const dy = pos.y - this.drag.start.y;
@@ -443,9 +453,10 @@ export class TransformLayer {
   }
 
   render() {
+    this.layer.innerHTML = '';
+    if (!this.enabled) return;
     const scene = this.sceneGetter();
     const item = scene && scene.sources.find((s) => s.id === this.compositor.selection);
-    this.layer.innerHTML = '';
     if (!item) return;
     const rect = this.canvas.getBoundingClientRect();
     const holder = this.layer.getBoundingClientRect();

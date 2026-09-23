@@ -69,14 +69,26 @@ export function initPanels(ctx) {
         el('button', {
           class: 'icon eye',
           title: item.visible ? 'Hide' : 'Show',
+          'aria-label': (item.visible ? 'Hide ' : 'Show ') + item.name,
           text: item.visible ? '👁' : '—',
           onclick: (e) => { e.stopPropagation(); store.update(() => { item.visible = !item.visible; }); },
         }),
         el('span', { class: 'row-name', text: item.name }),
-        el('span', { class: 'row-sub', text: runtime.status === 'error' ? '⚠' : (SOURCE_TYPES[item.type]?.label || item.type).split(' ')[0] }),
+        el('span', {
+          class: 'row-sub',
+          title: runtime.status === 'error' ? runtime.error
+            : runtime.status === 'ended' ? 'The capture was stopped — open properties to share again'
+            : runtime.status === 'empty' ? 'Nothing selected yet — open properties'
+            : '',
+          text: runtime.status === 'error' ? '⚠'
+            : runtime.status === 'ended' ? '⏹'
+            : runtime.status === 'empty' ? '…'
+            : (SOURCE_TYPES[item.type]?.label || item.type).split(' ')[0],
+        }),
         el('button', {
           class: 'icon',
           title: item.locked ? 'Unlock' : 'Lock',
+          'aria-label': (item.locked ? 'Unlock ' : 'Lock ') + item.name,
           text: item.locked ? '🔒' : '🔓',
           onclick: (e) => { e.stopPropagation(); store.update(() => { item.locked = !item.locked; }); },
         }),
@@ -269,6 +281,7 @@ export function initPanels(ctx) {
         class: 'icon mix-mute' + (strip.muted ? ' on' : ''),
         text: strip.muted ? '🔇' : '🔊',
         title: strip.muted ? 'Unmute' : 'Mute',
+        'aria-label': (strip.muted ? 'Unmute ' : 'Mute ') + strip.name,
         onclick: () => { mixer.setMuted(strip.id, !strip.muted); persistMixer(); renderMixer(); },
       });
       const gain = el('input', { type: 'range', min: 0, max: 1.5, step: 0.01, value: strip.gain });
@@ -280,7 +293,7 @@ export function initPanels(ctx) {
         if (next) { mixer.rename(strip.id, next); persistMixer(); renderMixer(); }
       });
       const removeBtn = el('button', {
-        class: 'icon', text: '✕', title: 'Remove input',
+        class: 'icon', text: '✕', title: 'Remove input', 'aria-label': 'Remove ' + strip.name,
         onclick: () => { mixer.removeStrip(strip.id); persistMixer(); renderMixer(); },
       });
       host.appendChild(el('div', { class: 'mix-strip' }, [

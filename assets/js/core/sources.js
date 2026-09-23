@@ -176,7 +176,10 @@ class DisplayRuntime extends VideoRuntime {
         audio: this.settings.captureAudio !== false,
       });
       stream.getVideoTracks()[0].addEventListener('ended', () => {
-        this.status = 'idle';
+        // Idle would make the render loop reopen the share picker on the next
+        // frame. Stay ended until the user asks for it again.
+        this.status = 'ended';
+        this.stream = null;
         bus.emit('source:ended', this.item.id);
       });
       await this.attachStream(stream);
@@ -214,7 +217,7 @@ class CameraRuntime extends VideoRuntime {
 class MediaRuntime extends VideoRuntime {
   async start() {
     const url = this.settings.url || this.settings.objectUrl;
-    if (!url) { this.status = 'idle'; return; }
+    if (!url) { this.status = 'empty'; return; }
     if (this.loadedUrl === url && this.status === 'ready') return;
     this.loadedUrl = url;
     this.video.src = url;
@@ -234,7 +237,7 @@ class MediaRuntime extends VideoRuntime {
 class ImageRuntime extends BaseRuntime {
   async start() {
     const url = this.settings.url || this.settings.dataUrl;
-    if (!url) { this.status = 'idle'; return; }
+    if (!url) { this.status = 'empty'; return; }
     if (this.loadedUrl === url && this.status === 'ready') return;
     this.loadedUrl = url;
     this.status = 'starting';
@@ -254,6 +257,9 @@ class ImageRuntime extends BaseRuntime {
 class ImageFeedRuntime extends ImageRuntime {
   async start() {
     await super.start();
+    // Without a URL this runtime stays idle, and the render loop retries an
+    // idle runtime every frame — so never arm a timer from that path.
+    if (!this.settings.url) return;
     clearInterval(this.pollHandle);
     const seconds = clamp(Number(this.settings.interval) || 5, 1, 3600);
     this.pollHandle = setInterval(() => {

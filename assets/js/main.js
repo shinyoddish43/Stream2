@@ -25,7 +25,8 @@ setCsrf(boot.csrf);
 const compositor = new Compositor(store, timer);
 const link = new LiveSplitLink(timer);
 const output = new OutputManager(compositor, mixer, store);
-const ctx = { store, compositor, mixer, output, timer, link, hotkeys, boot };
+const transformLayers = {};
+const ctx = { store, compositor, mixer, output, timer, link, hotkeys, boot, transformLayers };
 
 // Exposed on purpose: it is the seam for anything the UI does not cover yet —
 // a scripted scene switch, a tweak from the console, an automated test.
@@ -42,8 +43,10 @@ async function main() {
   const panels = initPanels(ctx);
   const timerPanel = initTimerPanel(ctx);
 
-  // Editing targets whichever canvas shows the scene being edited.
-  new TransformLayer($('#editLayer'), $('#programCanvas'), store, compositor, () => store.editScene());
+  // Editing targets whichever canvas shows the scene being edited: the program
+  // canvas normally, the preview canvas once studio mode is on.
+  transformLayers.program = new TransformLayer($('#editLayer'), $('#programCanvas'), store, compositor, () => store.editScene());
+  transformLayers.preview = new TransformLayer($('#previewEditLayer'), $('#previewCanvas'), store, compositor, () => store.editScene());
 
   restoreSplits();
   applyTheme();
@@ -141,8 +144,7 @@ function wireTransitions() {
   studio.addEventListener('change', () => {
     store.update((d) => {
       d.studioMode = studio.checked;
-      if (d.studioMode) d.previewScene = d.activeScene;
-      else d.previewScene = d.activeScene;
+      d.previewScene = d.activeScene;
     });
     applyStudioMode();
   });
@@ -157,13 +159,20 @@ function applyStudioMode() {
   $('#viewPreview').hidden = !on;
   $('#btnTransition').disabled = !on;
   $('#btnTransition').title = on ? 'Send preview to program' : 'Turn on studio mode to use this';
+  if (transformLayers.program) transformLayers.program.setEnabled(!on);
+  if (transformLayers.preview) transformLayers.preview.setEnabled(on);
+  $('#programLabel').textContent = on ? 'Program (on air)' : 'Program';
   compositor.resize();
 }
 
 function doTransition() {
   const doc = store.get();
   if (!doc.studioMode) return;
+  if (doc.previewScene === doc.activeScene) return;
+  // What was on air becomes the next thing you cue up, like any vision mixer.
+  const outgoing = doc.activeScene;
   compositor.transitionTo(doc.previewScene, doc.transition);
+  store.update((d) => { d.previewScene = outgoing; });
 }
 
 function wireHotkeys() {
@@ -177,16 +186,19 @@ function wireHotkeys() {
       case 'pause': timer.pause(); link.command('pause'); break;
     }
   });
-  // Scene hotkeys: Ctrl+1..9 switch scenes, the one shortcut every streamer
-  // reaches for without looking.
+  // Scene hotkeys. Ctrl+1..9 belongs to the browser's tab switcher and a page
+  // cannot take it back, so this is Ctrl+Shift+1..9 — free in every browser
+  // that matters, and it reads the digit off event.code so a non-US keyboard
+  // layout still works.
   window.addEventListener('keydown', (event) => {
-    if (!event.ctrlKey || event.altKey || event.metaKey) return;
-    const index = parseInt(event.key, 10);
-    if (Number.isNaN(index) || index < 1) return;
-    const scene = store.get().scenes[index - 1];
+    if (!event.ctrlKey || !event.shiftKey || event.altKey || event.metaKey) return;
+    const match = /^Digit([1-9])$/.exec(event.code);
+    if (!match) return;
+    const scene = store.get().scenes[Number(match[1]) - 1];
     if (!scene) return;
     event.preventDefault();
-    compositor.transitionTo(scene.id, store.get().transition);
+    if (store.get().studioMode) store.update((d) => { d.previewScene = scene.id; });
+    else compositor.transitionTo(scene.id, store.get().transition);
   });
 }
 

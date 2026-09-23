@@ -27,7 +27,16 @@ export class Hotkeys {
 
   /** Grab the next keypress and hand it back — used by the hotkey editor. */
   capture() {
+    this.cancelCapture();
     return new Promise((resolve) => { this.capturing = resolve; });
+  }
+
+  /** Abandon a capture in progress; the caller gets back an empty binding. */
+  cancelCapture() {
+    if (!this.capturing) return;
+    const resolve = this.capturing;
+    this.capturing = null;
+    resolve('');
   }
 
   onKey(event) {
@@ -48,7 +57,10 @@ export class Hotkeys {
     bus.emit('hotkey', action);
   }
 
-  destroy() { window.removeEventListener('keydown', this.onKey, true); }
+  destroy() {
+    this.cancelCapture();
+    window.removeEventListener('keydown', this.onKey, true);
+  }
 }
 
 function describe(event) {
