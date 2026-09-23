@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · Stream Studio</title>
+<link rel="icon" href="/favicon.svg">
+<link rel="stylesheet" href="/app.css">
+<script type="module" src="/login.js"></script>
+</head>
+<body class="login">
+<form id="loginForm" class="panel login-card">
+  <h1>Stream Studio</h1>
+  <label>Username <input name="user" autocomplete="username" required autofocus></label>
+  <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+  <button class="primary">Sign in</button>
+  <p class="error" id="loginError"></p>
+</form>
+</body>
+</html>

@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stream Studio</title>
+<link rel="icon" href="/favicon.svg">
+<link rel="stylesheet" href="/app.css">
+<script type="module" src="/app.js"></script>
+</head>
+<body class="studio">
+
+<header class="bar">
+  <strong class="brand">Stream Studio</strong>
+  <label class="inline">Layout
+    <select id="layoutSelect" aria-label="Layout"></select>
+  </label>
+  <button id="layoutNew">New</button>
+  <button id="layoutCopy">Duplicate</button>
+  <button id="layoutRename">Rename</button>
+  <button id="layoutDelete">Delete</button>
+  <span class="spacer"></span>
+  <span id="streamStatus" class="status" data-state="offline">Offline</span>
+  <button id="streamButton" class="primary">Start streaming</button>
+  <button id="settingsButton">Settings</button>
+  <form method="post" action="/api/logout"><button>Log out</button></form>
+</header>
+
+<main class="main">
+  <section class="preview">
+    <div class="stage">
+      <canvas id="program" width="1280" height="720"></canvas>
+      <canvas id="overlay" width="1280" height="720"></canvas>
+    </div>
+  </section>
+
+  <aside class="panel timer-panel">
+    <h2>Timer</h2>
+    <div class="timer-title"><b id="timerGame">—</b><span id="timerCategory"></span></div>
+    <div id="timerClock" class="timer-clock">0:00.00</div>
+    <div class="row">
+      <button id="timerSplit" class="primary grow">Start</button>
+      <button id="timerUndo" title="Undo split">Undo</button>
+      <button id="timerSkip" title="Skip split">Skip</button>
+    </div>
+    <div class="row">
+      <button id="timerPause" class="grow">Pause</button>
+      <button id="timerReset" class="danger grow">Reset</button>
+    </div>
+    <h3>Splits</h3>
+    <div class="row">
+      <button id="splitsImport" class="grow">Import .lss</button>
+      <button id="splitsExport" class="grow">Export .lss</button>
+    </div>
+    <button id="splitsEdit">Edit segments</button>
+    <p class="hint" id="hotkeyHint"></p>
+  </aside>
+</main>
+
+<footer class="docks">
+  <section class="panel">
+    <h2>Sources</h2>
+    <ul id="sourceList" class="list"></ul>
+    <div class="row wrap">
+      <button id="addCamera">+ Video device</button>
+      <button id="addScreen">+ Screen</button>
+      <button id="addTimer">+ Timer</button>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>Properties</h2>
+    <div id="props"><p class="hint">Select a source in the list or on the preview.</p></div>
+  </section>
+  <section class="panel">
+    <h2>Audio</h2>
+    <div id="mixer"></div>
+    <button id="addAudio">+ Audio input</button>
+  </section>
+</footer>
+
+<dialog id="settingsDialog">
+  <form method="dialog" id="settingsForm">
+    <h2>Settings</h2>
+    <h3>Twitch</h3>
+    <label>Stream key
+      <input type="password" id="setKey" autocomplete="off" placeholder="live_…">
+    </label>
+    <p class="hint" id="keyState"></p>
+    <label>Server
+      <input id="setIngest" placeholder="rtmp://live.twitch.tv/app">
+    </label>
+    <label class="check"><input type="checkbox" id="setTest"> Bandwidth test (sends to Twitch without going public)</label>
+    <h3>Video</h3>
+    <div class="grid2">
+      <label>Resolution
+        <select id="setResolution"><option value="1280x720">1280 × 720</option><option value="1920x1080">1920 × 1080</option></select>
+      </label>
+      <label>Frame rate
+        <select id="setFps"><option>30</option><option>60</option></select>
+      </label>
+      <label>Bitrate (kbps)
+        <input type="number" id="setBitrate" min="500" max="8000" step="100">
+      </label>
+    </div>
+    <h3>Timer hotkeys <span class="hint">(click a box, press a key)</span></h3>
+    <div class="grid2" id="hotkeyFields"></div>
+    <p class="error" id="settingsError"></p>
+    <div class="row end">
+      <button value="cancel" formnovalidate>Cancel</button>
+      <button id="settingsSave" value="save" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="splitsDialog">
+  <form method="dialog" id="splitsForm">
+    <h2>Edit segments</h2>
+    <label>Game <input id="editGame"></label>
+    <label>Category <input id="editCategory"></label>
+    <label>Segments, one per line
+      <textarea id="editSegments" rows="10"></textarea>
+    </label>
+    <p class="hint">Segments that keep their name keep their PB and gold.</p>
+    <div class="row end">
+      <button value="cancel" formnovalidate>Cancel</button>
+      <button value="save" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<input type="file" id="fileInput" hidden>
+</body>
+</html>

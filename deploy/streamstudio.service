@@ -1,0 +1,34 @@
+[Unit]
+Description=Stream Studio
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=streamstudio
+Group=streamstudio
+Environment=DATA_DIR=/var/lib/streamstudio
+Environment=PORT=8080
+# Loopback only: the outside world reaches it through Caddy (HTTPS) or an SSH tunnel.
+Environment=HOST=127.0.0.1
+ExecStart=/usr/bin/node /opt/streamstudio/server.js
+Restart=on-failure
+RestartSec=3
+UMask=0077
+
+# Hardening: the service can write to its data directory and nothing else.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/streamstudio
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

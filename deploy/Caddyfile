@@ -1,0 +1,10 @@
+# Stream Studio behind HTTPS. Caddy gets and renews the certificate itself.
+# Replace the domain; point its DNS A record at this VPS first.
+studio.example.com {
+	# Optional but strongly recommended: only your home connection gets in.
+	# Uncomment and put your home IP (search "what is my IP" from home).
+	# @notHome not remote_ip 203.0.113.7
+	# respond @notHome 403
+
+	reverse_proxy 127.0.0.1:8080
+}

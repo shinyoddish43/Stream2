@@ -1,68 +1,15 @@
 name: tests
-
-on:
-  push:
-    branches: ['**']
-  pull_request:
-
+on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.2'
-          extensions: json, xml, openssl
-          coverage: none
-
       - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Install the relay's one dependency (used by its tests too)
-        run: npm install --no-save ws@8.18.0
-
-      - name: Lint PHP
-        run: find . -name '*.php' -not -path './node_modules/*' -print0 | xargs -0 -n1 php -l
-
-      - name: Timer engine tests
-        run: node tests/timer.test.mjs
-
-      - name: Document store tests
-        run: node tests/store.test.mjs
-
-      - name: PHP tests
-        run: php tests/php.test.php
-
-      - name: API tests
-        run: bash tests/api.test.sh
-
-      - name: Relay tests
-        run: node tests/relay.test.mjs
-
-      - name: LiveSplit bridge tests
-        run: node tests/bridge.test.mjs
-
-      - name: Install Playwright
-        run: npm install --no-save playwright@1.49.0 && npx playwright install --with-deps chromium
-
-      - name: Browser tests
-        run: CHROMIUM_PATH= PLAYWRIGHT_PATH=playwright node tests/browser.test.mjs
-
-      - name: Static demo build tests
-        run: CHROMIUM_PATH= PLAYWRIGHT_PATH=playwright node tests/demo.test.mjs
-
-      - name: WHIP output tests
-        run: CHROMIUM_PATH= PLAYWRIGHT_PATH=playwright node tests/whip.test.mjs
-
-      - name: End-to-end streaming tests
-        run: CHROMIUM_PATH= PLAYWRIGHT_PATH=playwright node tests/stream.test.mjs
-
-      - name: Check the relay and bridge parse
-        run: |
-          node --check relay/server.js
-          node --check bridge/livesplit-bridge.js
-          python3 -m py_compile bridge/livesplit_bridge.py
+        with: { node-version: '22' }
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - run: npm ci
+      - run: npx --yes playwright@1.49.0 install --with-deps chromium
+      - run: npm install --no-save playwright@1.49.0
+      - run: npm test
+        env: { CHROMIUM_PATH: '' }
