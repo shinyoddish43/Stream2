@@ -182,7 +182,7 @@ MIT.
 tests/run.sh
 ```
 
-315 assertions across nine suites, no dependencies beyond PHP and (optionally)
+369 assertions across ten suites, no dependencies beyond PHP and (optionally)
 Node:
 
 | Suite | Covers |
@@ -193,9 +193,10 @@ Node:
 | `tests/api.test.sh` | every API route against a real PHP server in a throwaway copy: auth, CSRF, throttling, overlay tokens, splits import/export, key masking, relay-ticket signatures verified independently, the health check, and that a long poll never blocks the studio |
 | `tests/relay.test.mjs` | the relay against a stub ffmpeg: ticket signatures, expiry, non-RTMP and shell-injection targets, that the bytes reach the encoder's stdin unmangled and in order, the session cap, and cleanup on disconnect |
 | `tests/bridge.test.mjs` | both LiveSplit bridges against a fake LiveSplit Server: the hand-written WebSocket handshake and frame decoding, state push, command mapping, and that junk input cannot kill either one |
-| `tests/browser.test.mjs` | the studio in headless Chromium: compositing, idle-frame skipping, the timer, every dialog, scenes, studio mode, persistence across a reload, the overlay page — and fails on any console error |
+| `tests/browser.test.mjs` | the studio in headless Chromium: compositing, cropping, idle-frame skipping, the timer, every dialog, drag-to-move, scenes, studio mode, the starter layout, persistence across a reload, every overlay mode and what a token does — and fails on any console error |
 
 | `tests/demo.test.mjs` | builds the static demo and drives it: boots with no server, paints, runs the timer, remembers scenes across a reload, every dialog opens, and the parts that need a server say so |
+| `tests/whip.test.mjs` | the WHIP output against a stub ingest: the offer is POSTed as `application/sdp` with the bearer token and gathered ICE candidates, and a refused or unusable answer leaves the studio offline with a reason |
 | `tests/stream.test.mjs` | the whole streaming path with ffmpeg stubbed: the studio encodes its canvas, PHP mints the ticket, the relay verifies it, and real WebM lands on the encoder's stdin with the stream key applied — then the relay is killed mid-broadcast and the studio has to get itself back on air |
 
 The browser and streaming suites skip themselves when Playwright is absent, so the project stays
