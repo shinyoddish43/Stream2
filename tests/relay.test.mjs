@@ -170,6 +170,43 @@ if (up) {
   check('unauthorised binary is dropped without an ffmpeg',
     !early.messages.some((m) => m.type === 'ready'), JSON.stringify(early.messages));
 
+  // --- an ffmpeg that never reads: the relay must say so, not quietly ship a
+  // WebM stream with holes in it.
+  const stuck = join(work, 'stuck-ffmpeg.sh');
+  writeFileSync(stuck, '#!/usr/bin/env bash\nsleep 30\n');
+  chmodSync(stuck, 0o755);
+  const slowRelayPort = PORT + 1;
+  const slowRelay = spawn('node', [join(ROOT, 'relay', 'server.js')], {
+    env: { ...process.env, RELAY_SECRET: SECRET, PORT: String(slowRelayPort), FFMPEG_PATH: stuck,
+      BACKPRESSURE_LIMIT: '40000', BACKPRESSURE_GRACE_MS: '1000' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  await sleep(1000);
+  const stuckMessages = await new Promise((resolve) => {
+    const messages = [];
+    const ws = new Socket(`ws://127.0.0.1:${slowRelayPort}/ingest`);
+    ws.addEventListener('message', (event) => {
+      try { messages.push(JSON.parse(String(event.data))); } catch (e) {}
+    });
+    ws.addEventListener('open', async () => {
+      ws.send(JSON.stringify({ type: 'start', ticket: freshTicket() }));
+      await sleep(300);
+      for (let i = 0; i < 60; i++) { ws.send(crypto.randomBytes(64 * 1024)); await sleep(30); }
+      await sleep(1500);
+      try { ws.close(); } catch (e) {}
+      resolve(messages);
+    });
+    ws.addEventListener('error', () => resolve(messages));
+  });
+  check('a destination falling behind is reported, not hidden',
+    stuckMessages.some((m) => m.type === 'warning' && /not keeping up/.test(m.message || '')),
+    JSON.stringify(stuckMessages.slice(-4)));
+  check('a destination that stays behind is cut loose with a reason',
+    stuckMessages.some((m) => m.type === 'error' && /fell too far behind/.test(m.message || '')),
+    JSON.stringify(stuckMessages.slice(-4)));
+  slowRelay.kill();
+  await sleep(300);
+
   // --- capacity
   const held = [];
   for (let i = 0; i < 2; i++) {

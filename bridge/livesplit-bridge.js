@@ -73,13 +73,28 @@ function connectLiveSplit() {
 function ask(command, tag) {
   if (!connected) return;
   queue.push(tag);
-  // Guard against an unanswered command wedging the queue forever.
-  if (queue.length > 24) queue = queue.slice(-6);
   socket.write(command + '\r\n');
 }
 
+let outstandingSince = 0;
+
 setInterval(() => {
   if (!connected || !clients.size) return;
+  // Never overlap batches. Replies are matched to requests by position, so a
+  // second batch sent before the first was answered would shift every later
+  // answer onto the wrong field — a clock read as a phase.
+  if (queue.length) {
+    if (!outstandingSince) outstandingSince = Date.now();
+    // A reply that never comes would wedge the bridge, so start clean.
+    if (Date.now() - outstandingSince > 2000) {
+      console.warn('[bridge] LiveSplit stopped answering; resetting the queue');
+      queue = [];
+      buffer = '';
+      outstandingSince = 0;
+    }
+    return;
+  }
+  outstandingSince = 0;
   ask('getcurrenttimerphase', 'phase');
   ask('getcurrenttime', 'time');
   ask('getsplitindex', 'index');

@@ -45,7 +45,9 @@ for item in api lib assets overlay index.php login.php install.php .htaccess; do
 done
 mkdir -p "$WORK/data"
 
-php -S "127.0.0.1:$PORT" -t "$WORK" >"$WORK/server.log" 2>&1 &
+# Several workers: PHP's built-in server is single-threaded otherwise, and the
+# concurrency test below would measure that instead of what it means to.
+PHP_CLI_SERVER_WORKERS=4 php -S "127.0.0.1:$PORT" -t "$WORK" >"$WORK/server.log" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 1 40); do
   curl -sf "http://127.0.0.1:$PORT/api/index.php?r=health" >/dev/null 2>&1 && break
@@ -90,6 +92,17 @@ check "state publishes" "$(post state '{"state":{"phase":"running","time":12.5,"
 check "overlay token reads state" "$(curl -s "${API}state&token=$TOKEN")" '"game":"Test"'
 check "a bad overlay token is refused" "$(curl -s "${API}state&token=wrong")" 'not authenticated'
 check "no token at all is refused"     "$(curl -s "${API}state")" 'not authenticated'
+
+# --- a waiting overlay must not block the studio
+# Regression: the long poll held the PHP session lock, so every other request
+# from the same browser queued behind it — including the studio's own saves.
+curl -s -b "$JAR" "${API}state&since=99999&wait=2500&token=$TOKEN" >/dev/null &
+POLL_PID=$!
+sleep 0.4
+ELAPSED="$(curl -s -o /dev/null -w '%{time_total}' -b "$JAR" -c "$JAR" "${API}session/me")"
+wait $POLL_PID 2>/dev/null
+QUICK="$(python3 -c "print('quick' if float('$ELAPSED') < 1.0 else 'slow:$ELAPSED')")"
+check "a long poll does not block other requests" "$QUICK" 'quick'
 
 # --- splits
 LSS='<?xml version="1.0"?><Run version="1.7.0"><GameName>Celeste</GameName><CategoryName>Any%</CategoryName><Offset>00:00:00</Offset><AttemptCount>77</AttemptCount><Segments><Segment><Name>Forsaken City</Name><SplitTimes><SplitTime name="Personal Best"><RealTime>00:02:10.5</RealTime></SplitTime></SplitTimes><BestSegmentTime><RealTime>00:02:05</RealTime></BestSegmentTime></Segment></Segments></Run>'

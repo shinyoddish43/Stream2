@@ -27,6 +27,8 @@ const SECRET = process.env.RELAY_SECRET || '';
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS || '4', 10);
 const MAX_CHUNK = 8 * 1024 * 1024;
+const BACKPRESSURE_LIMIT = parseInt(process.env.BACKPRESSURE_LIMIT || String(16 * 1024 * 1024), 10);
+const BACKPRESSURE_GRACE_MS = parseInt(process.env.BACKPRESSURE_GRACE_MS || '10000', 10);
 
 if (!SECRET) {
   console.error('RELAY_SECRET is required. Copy relay_secret out of data/config.json.');
@@ -125,13 +127,19 @@ class Session {
         }
       });
       child.stdin.on('error', () => { /* the pipe closes when ffmpeg dies; already reported */ });
-      this.children.push({ child, target });
+      this.children.push({ child, target, dropped: 0, behindSince: 0 });
     }
 
     this.started = true;
     this.send({ type: 'ready', targets: targets.map((t) => t.name) });
     this.statsHandle = setInterval(() => {
-      this.send({ type: 'stats', bytes: this.bytes, uptime: (Date.now() - this.startedAt) / 1000, targets: this.children.length });
+      this.send({
+        type: 'stats',
+        bytes: this.bytes,
+        uptime: (Date.now() - this.startedAt) / 1000,
+        targets: this.children.length,
+        dropped: this.children.reduce((sum, c) => sum + c.dropped, 0),
+      });
     }, 5000);
     console.log(`[relay] session up: ${targets.map((t) => t.name).join(', ')} (user=${payload.user || '?'})`);
   }
@@ -139,12 +147,39 @@ class Session {
   write(buffer) {
     if (!this.started) return;
     this.bytes += buffer.length;
-    for (const { child } of this.children) {
-      if (child.stdin.writable) {
-        // Never let a stuck ffmpeg grow the Node heap without bound.
-        if (child.stdin.writableLength > 16 * 1024 * 1024) continue;
-        child.stdin.write(buffer);
+    const now = Date.now();
+    for (const entry of this.children) {
+      const { child, target } = entry;
+      if (!child.stdin.writable) continue;
+      // Never let a stuck ffmpeg grow the Node heap without bound. Skipping a
+      // chunk leaves a hole in that destination's WebM, so say so rather than
+      // quietly shipping a corrupt stream.
+      if (child.stdin.writableLength > BACKPRESSURE_LIMIT) {
+        entry.dropped++;
+        if (!entry.behindSince) {
+          entry.behindSince = now;
+          this.send({ type: 'warning', target: target.name,
+            message: `${target.name} is not keeping up — lower the bitrate or use a faster preset` });
+          console.warn(`[relay] ${target.name} is behind (${child.stdin.writableLength} bytes buffered)`);
+        } else if (now - entry.behindSince > BACKPRESSURE_GRACE_MS) {
+          this.send({ type: 'error', target: target.name,
+            message: `${target.name} fell too far behind and was dropped after ${entry.dropped} lost chunks` });
+          console.error(`[relay] dropping ${target.name}: ${entry.dropped} chunks lost`);
+          try { child.stdin.end(); child.kill('SIGKILL'); } catch (e) {}
+          this.children = this.children.filter((c) => c !== entry);
+          if (!this.children.length) {
+            this.send({ type: 'error', message: 'every destination fell behind; stopping' });
+            this.stop();
+            return;
+          }
+        }
+        continue;
       }
+      if (entry.behindSince) {
+        console.log(`[relay] ${target.name} caught up`);
+        entry.behindSince = 0;
+      }
+      child.stdin.write(buffer);
     }
   }
 

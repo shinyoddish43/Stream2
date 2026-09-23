@@ -150,7 +150,7 @@
   var failures = 0;
   function poll() {
     if (Date.now() - lastLocal < 2000) { setTimeout(poll, 500); return; }
-    fetch('../api/index.php?r=state&since=' + rev + '&wait=4000&token=' + encodeURIComponent(token), { cache: 'no-store' })
+    fetch('../api/index.php?r=state&since=' + rev + '&wait=2500&token=' + encodeURIComponent(token), { cache: 'no-store' })
       .then(function (res) { return res.json(); })
       .then(function (data) {
         failures = 0;

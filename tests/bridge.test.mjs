@@ -35,6 +35,7 @@ const check = (name, ok, detail = '') => {
 // ---- a fake LiveSplit Server: answers the three commands the bridge polls,
 // and records anything else it is told to do.
 const received = [];
+let skipNext = false;
 const state = { phase: 'Running', time: '00:01:23.45', index: '2' };
 const livesplit = net.createServer((socket) => {
   let buffer = '';
@@ -46,6 +47,7 @@ const livesplit = net.createServer((socket) => {
       buffer = buffer.slice(index + 1);
       if (!line) continue;
       received.push(line);
+      if (skipNext && line.startsWith('get')) { skipNext = false; continue; }  // a reply that never comes
       if (line === 'getcurrenttimerphase') socket.write(state.phase + '\r\n');
       else if (line === 'getcurrenttime') socket.write(state.time + '\r\n');
       else if (line === 'getsplitindex') socket.write(state.index + '\r\n');
@@ -136,6 +138,16 @@ async function runBridge(label, command, args, port) {
   const stillLive = messages.length;
   await sleep(400);
   check(`${label}: the bridge keeps streaming after junk`, messages.length > stillLive);
+
+  // Regression: replies are matched to requests by position, so one dropped
+  // reply used to shift every later answer onto the wrong field — LiveSplit's
+  // clock arriving where the phase belonged.
+  skipNext = true;
+  await sleep(2600);   // past the bridge's stuck-queue reset
+  const afterGap = messages[messages.length - 1] || {};
+  check(`${label}: a dropped reply does not shift later answers`,
+    afterGap.phase === 'ended' && Math.abs((afterGap.time || 0) - 120) < 0.01, JSON.stringify(afterGap));
+  check(`${label}: the split index survives a dropped reply`, afterGap.currentSplit === 2, JSON.stringify(afterGap));
 
   // A large frame exercises the 16-bit length path of the hand-written decoder.
   ws.send(JSON.stringify({ cmd: 'pause', padding: 'x'.repeat(400) }));

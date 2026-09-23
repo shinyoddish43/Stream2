@@ -74,8 +74,21 @@ class Auth
     /** True when the request carries either a valid session or the overlay token. */
     public static function readAccess()
     {
-        if (self::user()) return true;
-        return self::validOverlayToken();
+        // Token first, deliberately: checking it needs no session, and a
+        // session_start() here would take the per-session lock that serialises
+        // every other request from the same browser.
+        if (self::validOverlayToken()) return true;
+        return (bool)self::user();
+    }
+
+    /**
+     * Release the session lock while keeping the data readable. Anything that
+     * waits — a long poll, a slow upload — must call this or it stalls every
+     * other request from the same browser.
+     */
+    public static function releaseLock()
+    {
+        if (session_status() === PHP_SESSION_ACTIVE) session_write_close();
     }
 
     public static function validOverlayToken()

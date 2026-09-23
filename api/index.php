@@ -117,15 +117,22 @@ case 'state': {
     // Live timer/scene state, published by the studio and read by overlays.
     if ($method === 'GET') {
         Auth::requireRead();
+        // Hold nothing while we wait: the session lock would serialise the
+        // studio's own requests behind this poll, and the client is gone
+        // anyway if it has given up.
+        Auth::releaseLock();
+        ignore_user_abort(false);
         $state = $store->read('state', ['rev' => 0]);
         $since = isset($_GET['since']) ? (int)$_GET['since'] : -1;
-        // Short poll with a tiny server-side wait: cheap on shared hosting and
-        // it keeps overlay latency near a frame without hammering the CPU.
-        $waitMs = isset($_GET['wait']) ? (int)sv_clamp((int)$_GET['wait'], 0, 8000) : 0;
+        // A short server-side wait keeps overlay latency near a frame without
+        // hammering the CPU. Capped low on purpose: each waiting request holds
+        // a PHP worker, and shared hosting has few of them.
+        $waitMs = isset($_GET['wait']) ? (int)sv_clamp((int)$_GET['wait'], 0, 5000) : 0;
         if ($waitMs > 0 && (int)($state['rev'] ?? 0) <= $since) {
             $deadline = microtime(true) + ($waitMs / 1000);
             while (microtime(true) < $deadline) {
                 usleep(120000);
+                if (connection_aborted()) exit;
                 $state = $store->read('state', ['rev' => 0]);
                 if ((int)($state['rev'] ?? 0) > $since) break;
             }

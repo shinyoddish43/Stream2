@@ -140,6 +140,40 @@ T::describe('stream key encryption', function () {
         T::equal(sv_decrypt($tampered), '');
     });
     T::it('handles the empty string', fn() => T::equal(sv_encrypt(''), ''));
+    T::it('still reads the first fallback format', function () {
+        // v0 blobs exist in installs that predated the nonce, and must keep
+        // decrypting or the user silently loses their stream keys.
+        $key = sv_secret_key();
+        $plain = 'legacy_key_value';
+        $stream = '';
+        for ($i = 0; $i < strlen($plain); $i += 32) $stream .= hash('sha256', $key . $i, true);
+        $blob = 'v0:' . base64_encode($plain ^ substr($stream, 0, strlen($plain)));
+        T::equal(sv_decrypt($blob), $plain);
+    });
+});
+
+T::describe('the no-OpenSSL fallback', function () {
+    T::it('round-trips', function () {
+        $nonce = random_bytes(16);
+        $key = sv_secret_key();
+        $ct = 'hunter2hunter2' ^ sv_keystream($key, $nonce, 14);
+        $mac = hash_hmac('sha256', $nonce . $ct, $key, true);
+        T::equal(sv_decrypt('v2:' . base64_encode($nonce . $mac . $ct)), 'hunter2hunter2');
+    });
+    T::it('never reuses a keystream', function () {
+        $key = sv_secret_key();
+        $a = sv_keystream($key, str_repeat("\x01", 16), 32);
+        $b = sv_keystream($key, str_repeat("\x02", 16), 32);
+        T::ok($a !== $b, 'the same keystream for two nonces');
+    });
+    T::it('rejects a tampered blob', function () {
+        $nonce = random_bytes(16);
+        $key = sv_secret_key();
+        $ct = 'secret' ^ sv_keystream($key, $nonce, 6);
+        $mac = hash_hmac('sha256', $nonce . $ct, $key, true);
+        $blob = 'v2:' . base64_encode($nonce . $mac . ($ct ^ str_repeat("\x01", 6)));
+        T::equal(sv_decrypt($blob), '');
+    });
 });
 
 T::describe('passwords', function () {

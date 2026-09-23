@@ -70,11 +70,21 @@ function sv_encrypt($plain) {
         $mac = hash_hmac('sha256', $iv . $ct, $key, true);
         return 'v1:' . base64_encode($iv . $mac . $ct);
     }
-    $stream = '';
-    $len = strlen($plain);
-    for ($i = 0; $i < $len; $i += 32) $stream .= hash('sha256', $key . $i, true);
-    $ct = $plain ^ substr($stream, 0, $len);
-    return 'v0:' . base64_encode($ct);
+    // No OpenSSL: a keyed stream cipher with a per-message nonce, plus an
+    // HMAC. Never reuse a keystream across messages.
+    $nonce = random_bytes(16);
+    $ct = $plain ^ sv_keystream($key, $nonce, strlen($plain));
+    $mac = hash_hmac('sha256', $nonce . $ct, $key, true);
+    return 'v2:' . base64_encode($nonce . $mac . $ct);
+}
+
+/** Keyed keystream for the no-OpenSSL fallback, unique per nonce. */
+function sv_keystream($key, $nonce, $length) {
+    $out = '';
+    for ($block = 0; strlen($out) < $length; $block++) {
+        $out .= hash_hmac('sha256', $nonce . pack('N', $block), $key, true);
+    }
+    return substr($out, 0, $length);
 }
 
 function sv_decrypt($blob) {
@@ -90,7 +100,18 @@ function sv_decrypt($blob) {
         $out = openssl_decrypt($ct, 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv);
         return $out === false ? '' : $out;
     }
+    if (strpos($blob, 'v2:') === 0) {
+        $raw = base64_decode(substr($blob, 3), true);
+        if ($raw === false || strlen($raw) < 48) return '';
+        $nonce = substr($raw, 0, 16);
+        $mac = substr($raw, 16, 32);
+        $ct = substr($raw, 48);
+        if (!sv_equals($mac, hash_hmac('sha256', $nonce . $ct, $key, true))) return '';
+        return $ct ^ sv_keystream($key, $nonce, strlen($ct));
+    }
     if (strpos($blob, 'v0:') === 0) {
+        // The first fallback format, kept only so an existing install can
+        // still read what it wrote before this was improved.
         $ct = base64_decode(substr($blob, 3), true);
         if ($ct === false) return '';
         $stream = '';
