@@ -1,4 +1,9 @@
 // Thin wrapper over the PHP API. Adds the CSRF header and unwraps errors.
+//
+// In demo mode (a static copy of the studio with no server behind it) the same
+// surface is served from the browser instead — see api-demo.js.
+
+import { demoApi, isDemo } from './api-demo.js';
 
 const BASE = 'api/index.php?r=';
 let csrf = (window.STUDIO_BOOT && window.STUDIO_BOOT.csrf) || '';
@@ -23,7 +28,7 @@ async function request(route, { method = 'GET', body, raw = false, signal } = {}
   return data;
 }
 
-export const api = {
+const serverApi = {
   health: () => request('health'),
   me: () => request('session/me'),
   logout: () => request('session/logout', { method: 'POST' }),
@@ -52,3 +57,5 @@ export const api = {
   saveSettings: (settings) => request('settings', { method: 'POST', body: settings }),
   changePassword: (current, next) => request('password', { method: 'POST', body: { current, next } }),
 };
+
+export const api = isDemo() ? demoApi : serverApi;

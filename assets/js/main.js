@@ -51,11 +51,20 @@ async function main() {
   restoreSplits();
   applyTheme();
   applyStudioMode();
-  wireMenu(panels, timerPanel);
-  wireTransitions();
-  wireHotkeys();
-  wireStats();
-  wireLifecycle();
+  // Each of these is independent; one throwing must not leave the rest of the
+  // studio unwired, which is exactly what used to happen.
+  for (const [name, step] of [
+    ['menu', () => wireMenu(panels, timerPanel)],
+    ['transitions', wireTransitions],
+    ['hotkeys', wireHotkeys],
+    ['stats', wireStats],
+    ['lifecycle', wireLifecycle],
+  ]) {
+    try { step(); } catch (e) {
+      console.error(`[studio] ${name} failed to wire`, e);
+      toast(`Part of the interface (${name}) failed to start: ${e.message}`, 'err');
+    }
+  }
 
   if (store.get().timer.link.mode && store.get().timer.link.mode !== 'off') {
     link.connect(store.get().timer.link.url, store.get().timer.link.mode);
@@ -89,7 +98,8 @@ function wireMenu(panels, timerPanel) {
     'toggle-record': toggleRecord,
     'toggle-lowpower': () => {
       store.update((d) => { d.lowPower = !d.lowPower; });
-      $('#btnLowPower').textContent = 'Low power: ' + (store.get().lowPower ? 'on' : 'off');
+      const button = $('#btnLowPower');
+      if (button) button.textContent = 'Low power: ' + (store.get().lowPower ? 'on' : 'off');
     },
     'do-transition': doTransition,
     'cycle-theme': () => {
@@ -115,14 +125,20 @@ function wireMenu(panels, timerPanel) {
   bus.on('ui:open-splits', () => openSplits(ctx));
   bus.on('ui:open-history', () => openHistory(ctx));
 
-  $('#logoutLink').addEventListener('click', async (event) => {
-    event.preventDefault();
-    if (output.streaming && !confirm('You are live. Sign out anyway?')) return;
-    await api.logout().catch(() => {});
-    location.href = 'login.php';
-  });
+  // The shell varies — a static demo build has no account to sign out of — so
+  // never let one missing element abort the rest of the wiring.
+  const logout = $('#logoutLink');
+  if (logout) {
+    logout.addEventListener('click', async (event) => {
+      event.preventDefault();
+      if (output.streaming && !confirm('You are live. Sign out anyway?')) return;
+      await api.logout().catch(() => {});
+      location.href = 'login.php';
+    });
+  }
 
-  $('#btnLowPower').textContent = 'Low power: ' + (store.get().lowPower ? 'on' : 'off');
+  const lowPower = $('#btnLowPower');
+  if (lowPower) lowPower.textContent = 'Low power: ' + (store.get().lowPower ? 'on' : 'off');
 }
 
 function wireTransitions() {

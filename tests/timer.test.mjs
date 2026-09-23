@@ -4,6 +4,7 @@
 
 import { describe, it, assert, report } from './tiny.mjs';
 import { SpeedrunTimer, PHASE } from '../assets/js/timer/timer.js';
+import { countdownLabel, formatCountdown } from '../assets/js/core/sources.js';
 
 /** A three-split run with a PB of 60s and known golds. */
 function sampleRun() {
@@ -262,4 +263,19 @@ describe('the snapshot overlays render from', () => {
   it('is JSON-safe', () => assert.ok(JSON.parse(JSON.stringify(snap)).segments.length === 3));
 });
 
-report('timer engine');
+describe('countdown source', () => {
+  it('shows its configured length before anyone starts it', () => {
+    assert.equal(countdownLabel({ minutes: 10, endsAt: 0, prefix: 'Starting in ' }), 'Starting in 10:00');
+  });
+  it('counts down once started', () => {
+    const label = countdownLabel({ minutes: 10, endsAt: Date.now() + 65000, prefix: '' });
+    assert.ok(label === '1:05' || label === '1:04', label);
+  });
+  it('shows the finished text only after it has run', () => {
+    assert.equal(countdownLabel({ minutes: 10, endsAt: Date.now() - 1000, done: "We're live" }), "We're live");
+  });
+  it('formats past an hour', () => assert.equal(formatCountdown(3725), '1:02:05'));
+  it('rounds up, so it never shows 0:00 while time remains', () => assert.equal(formatCountdown(0.2), '0:01'));
+});
+
+await report('timer engine');

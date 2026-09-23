@@ -9,7 +9,7 @@
 // driver hiccups mid-stream.
 
 import { bus, clamp } from './util.js';
-import { getRuntime, dropRuntime, roundRect, countdownRemaining, formatCountdown } from './sources.js';
+import { getRuntime, dropRuntime, roundRect, countdownLabel } from './sources.js';
 
 // Sources whose pixels change on their own.
 const LIVE_TYPES = new Set(['display', 'camera', 'media', 'imagefeed']);
@@ -150,10 +150,7 @@ export class Compositor {
     let countdown;
     const scene = this.store.get().scenes.find((s) => s.id === this.store.get().activeScene);
     const source = scene && scene.sources.find((item) => item.type === 'countdown' && item.visible);
-    if (source) {
-      const left = countdownRemaining(source.settings || {});
-      countdown = left > 0 ? formatCountdown(left) : (source.settings || {}).done || '';
-    }
+    if (source) countdown = countdownLabel(source.settings || {});
     return { timer: this.timer ? this.timer.snapshot() : null, now: performance.now(), countdown };
   }
 

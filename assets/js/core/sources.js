@@ -332,10 +332,7 @@ class TextRuntime extends BaseRuntime {
 class CountdownRuntime extends BaseRuntime {
   paint(ctx, item, context) {
     const s = item.settings || {};
-    const remaining = countdownRemaining(s);
-    const label = remaining > 0
-      ? (s.prefix || '') + formatCountdown(remaining)
-      : (s.done || '');
+    const label = countdownLabel(s);
     if (!label) return;
     ctx.save();
     ctx.font = `700 ${Number(s.size) || 72}px ${s.font || 'system-ui'}, sans-serif`;
@@ -361,6 +358,18 @@ class CountdownRuntime extends BaseRuntime {
 export function countdownRemaining(settings) {
   if (!settings || !settings.endsAt) return 0;
   return Math.max(0, (settings.endsAt - Date.now()) / 1000);
+}
+
+/**
+ * What a countdown should read right now. A countdown nobody has started yet
+ * shows the length it is set to — showing the finished text before it has run
+ * is both wrong and impossible to lay out against.
+ */
+export function countdownLabel(settings) {
+  const s = settings || {};
+  if (!s.endsAt) return (s.prefix || '') + formatCountdown((Number(s.minutes) || 0) * 60);
+  const remaining = countdownRemaining(s);
+  return remaining > 0 ? (s.prefix || '') + formatCountdown(remaining) : (s.done || '');
 }
 
 export function formatCountdown(seconds) {

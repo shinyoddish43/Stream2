@@ -37,6 +37,19 @@ rather than bolted on as a browser source.
 - **Installs on shared hosting** — PHP 7.4+, flat JSON files, no database.
   Upload, open `install.php`, done.
 
+## Try it without installing anything
+
+```bash
+deploy/build-demo.sh          # -> dist-demo/, a static copy with no server
+```
+
+Open `dist-demo/index.html` from any web server (or let
+`.github/workflows/demo-pages.yml` publish it to GitHub Pages). The demo is the
+real studio with the API served from the browser instead: scenes, sources, the
+compositor, the timer and the overlays all work and are kept in localStorage.
+Stream keys and multistreaming are not in it — a static page has nowhere safe
+to keep a key.
+
 ## Requirements
 
 | Piece | Needs |
@@ -133,7 +146,7 @@ The studio is written for the machine you have, not the one you wish you had.
 
 ```
 index.php            studio shell            api/index.php     one-file JSON API
-health.php           post-deploy self-check  deploy/           deploy script + docs
+health.php           post-deploy self-check  deploy/           deploy + demo build scripts
 login.php            sign in                 lib/             Store, Auth, Lss
 install.php          setup wizard            assets/js/core/  state, compositor, audio, output, sources
 overlay/timer.html   browser source for OBS  assets/js/timer/ timer engine, .lss, bridge client, hotkeys
@@ -169,7 +182,7 @@ MIT.
 tests/run.sh
 ```
 
-289 assertions across eight suites, no dependencies beyond PHP and (optionally)
+315 assertions across nine suites, no dependencies beyond PHP and (optionally)
 Node:
 
 | Suite | Covers |
@@ -182,6 +195,7 @@ Node:
 | `tests/bridge.test.mjs` | both LiveSplit bridges against a fake LiveSplit Server: the hand-written WebSocket handshake and frame decoding, state push, command mapping, and that junk input cannot kill either one |
 | `tests/browser.test.mjs` | the studio in headless Chromium: compositing, idle-frame skipping, the timer, every dialog, scenes, studio mode, persistence across a reload, the overlay page — and fails on any console error |
 
+| `tests/demo.test.mjs` | builds the static demo and drives it: boots with no server, paints, runs the timer, remembers scenes across a reload, every dialog opens, and the parts that need a server say so |
 | `tests/stream.test.mjs` | the whole streaming path with ffmpeg stubbed: the studio encodes its canvas, PHP mints the ticket, the relay verifies it, and real WebM lands on the encoder's stdin with the stream key applied — then the relay is killed mid-broadcast and the studio has to get itself back on air |
 
 The browser and streaming suites skip themselves when Playwright is absent, so the project stays

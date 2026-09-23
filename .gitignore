@@ -5,3 +5,5 @@ node_modules/
 relay/node_modules/
 *.log
 .DS_Store
+dist-demo/
+dist-artifact/
