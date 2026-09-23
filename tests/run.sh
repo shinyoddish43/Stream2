@@ -27,6 +27,10 @@ echo "── browser"
 if command -v node >/dev/null 2>&1; then node tests/browser.test.mjs || STATUS=1
 else echo "skipped (node not installed)"; fi
 
+echo "── streaming end to end"
+if command -v node >/dev/null 2>&1; then node tests/stream.test.mjs || STATUS=1
+else echo "skipped (node not installed)"; fi
+
 echo
 [ "$STATUS" -eq 0 ] && echo "all suites passed" || echo "some suites failed"
 exit "$STATUS"

@@ -49,6 +49,9 @@ jobs:
       - name: Browser tests
         run: CHROMIUM_PATH= PLAYWRIGHT_PATH=playwright node tests/browser.test.mjs
 
+      - name: End-to-end streaming tests
+        run: CHROMIUM_PATH= PLAYWRIGHT_PATH=playwright node tests/stream.test.mjs
+
       - name: Check the relay and bridge parse
         run: |
           node --check relay/server.js

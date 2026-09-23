@@ -27,6 +27,12 @@ const link = new LiveSplitLink(timer);
 const output = new OutputManager(compositor, mixer, store);
 const ctx = { store, compositor, mixer, output, timer, link, hotkeys, boot };
 
+// Exposed on purpose: it is the seam for anything the UI does not cover yet —
+// a scripted scene switch, a tweak from the console, an automated test.
+//   STUDIO.store.update(d => { d.canvas.fps = 24; });
+//   STUDIO.compositor.transitionTo(STUDIO.store.get().scenes[1].id);
+window.STUDIO = ctx;
+
 async function main() {
   await store.load();
   compositor.attach($('#programCanvas'), $('#previewCanvas'));
@@ -195,8 +201,10 @@ function wireStats() {
 
   bus.on('output:state', () => {
     const state = output.state();
-    liveNode.dataset.state = state.streaming ? 'live' : state.recording ? 'rec' : 'off';
-    liveNode.textContent = state.streaming ? 'LIVE' : state.recording ? 'REC' : 'OFFLINE';
+    liveNode.dataset.state = state.reconnecting ? 'connecting'
+      : state.streaming ? 'live' : state.recording ? 'rec' : 'off';
+    liveNode.textContent = state.reconnecting ? 'RECONNECTING'
+      : state.streaming ? 'LIVE' : state.recording ? 'REC' : 'OFFLINE';
     $('#btnStream').textContent = state.streaming ? 'Stop streaming' : 'Start streaming';
     $('#btnStream').classList.toggle('live', state.streaming);
     $('#btnRecord').textContent = state.recording && !state.streaming ? 'Stop recording' : 'Start recording';

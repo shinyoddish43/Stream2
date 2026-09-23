@@ -49,6 +49,11 @@ export class OutputManager {
     this.lastBitrateBytes = 0;
     this.bitrate = 0;
     this.statsHandle = null;
+    this.getTicket = null;
+    this.reconnectAttempt = 0;
+    this.reconnectHandle = null;
+    this.reconnecting = false;
+    this.maxReconnects = 8;
   }
 
   /** Canvas video + mixed audio, the stream every output consumes. */
@@ -235,7 +240,10 @@ export class OutputManager {
       else if (msg.type === 'stats') bus.emit('relay:stats', msg);
     });
     ws.addEventListener('close', () => {
-      if (this.streaming) { toast('Relay disconnected', 'err'); this.stopStream(); }
+      // A dropped relay mid-stream is a network blip, not the end of the
+      // broadcast. Rebuild the session rather than dumping the streamer off
+      // air and making them notice.
+      if (this.streaming && this.ws === ws) this.scheduleReconnect();
     });
 
     this.recorder = new MediaRecorder(stream, {
@@ -256,7 +264,57 @@ export class OutputManager {
     this.recorder.start(250);
   }
 
+  /**
+   * Rebuild a dropped relay session: fresh ticket, fresh socket, fresh
+   * recorder. The recorder has to restart because each ffmpeg on the other
+   * side needs a WebM header, and the old one went with the old process.
+   */
+  scheduleReconnect() {
+    if (!this.streaming || this.reconnectHandle) return;
+    if (this.reconnectAttempt >= this.maxReconnects) {
+      toast('Relay is unreachable after several tries — going offline.', 'err');
+      this.stopStream();
+      return;
+    }
+    this.reconnecting = true;
+    this.reconnectAttempt++;
+    this.teardownRelaySockets();
+    const delay = Math.min(10000, 1000 * Math.pow(2, this.reconnectAttempt - 1));
+    toast(`Relay dropped — reconnecting in ${Math.round(delay / 1000)}s (try ${this.reconnectAttempt})`, 'err');
+    bus.emit('output:state', this.state());
+    this.reconnectHandle = setTimeout(async () => {
+      this.reconnectHandle = null;
+      if (!this.streaming) return;
+      try {
+        const { ticket, relay } = await this.getTicket();
+        await this.startRelay(ticket, relay);
+        this.reconnecting = false;
+        this.reconnectAttempt = 0;
+        toast('Back on the relay', 'ok');
+        bus.emit('output:state', this.state());
+      } catch (e) {
+        this.scheduleReconnect();
+      }
+    }, delay);
+  }
+
+  /** Drop the socket and recorder without ending the broadcast. */
+  teardownRelaySockets() {
+    if (this.recorder) {
+      try { this.recorder.ondataavailable = null; this.recorder.stop(); } catch (e) {}
+      this.recorder = null;
+    }
+    if (this.ws) {
+      try { this.ws.close(); } catch (e) {}
+      this.ws = null;
+    }
+  }
+
   stopRelay() {
+    clearTimeout(this.reconnectHandle);
+    this.reconnectHandle = null;
+    this.reconnecting = false;
+    this.reconnectAttempt = 0;
     if (this.recorder) { try { this.recorder.stop(); } catch (e) {} this.recorder = null; }
     if (this.ws) {
       try {
@@ -278,6 +336,8 @@ export class OutputManager {
       if (doc.output.mode === 'whip') {
         await this.startWhip();
       } else if (doc.output.mode === 'relay') {
+        this.getTicket = getTicket;
+        this.reconnectAttempt = 0;
         const { ticket, relay } = await getTicket();
         await this.startRelay(ticket, relay);
       } else {
@@ -341,6 +401,7 @@ export class OutputManager {
     return {
       recording: this.recording,
       streaming: this.streaming,
+      reconnecting: this.reconnecting,
       mode: this.store.get().output.mode,
       bitrate: this.bitrate,
       uptime: this.startedAt ? (Date.now() - this.startedAt) / 1000 : 0,

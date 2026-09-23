@@ -92,6 +92,10 @@ limit, not an oversight. Two ways around it:
 | **WHIP** | One WebRTC stream to a WHIP ingest endpoint | a WHIP host |
 | **Relay** | WebM chunks over WebSocket → `ffmpeg` → every enabled RTMP destination | `relay/` on a Node host |
 
+If the relay connection drops mid-broadcast the studio does not go offline: it
+rebuilds the session — fresh ticket, socket and encoder — with a backoff, and
+says so in the status bar. It gives up after eight tries.
+
 Stream keys are encrypted at rest in `data/destinations.json` and never sent
 back to the browser. When you go live, the studio asks PHP for a 120-second
 HMAC ticket that carries the destination URLs; the relay verifies the ticket
@@ -151,7 +155,7 @@ MIT.
 tests/run.sh
 ```
 
-211 assertions across six suites, no dependencies beyond PHP and (optionally)
+228 assertions across seven suites, no dependencies beyond PHP and (optionally)
 Node:
 
 | Suite | Covers |
@@ -163,6 +167,8 @@ Node:
 | `tests/bridge.test.mjs` | both LiveSplit bridges against a fake LiveSplit Server: the hand-written WebSocket handshake and frame decoding, state push, command mapping, and that junk input cannot kill either one |
 | `tests/browser.test.mjs` | the studio in headless Chromium: compositing, idle-frame skipping, the timer, every dialog, scenes, studio mode, persistence across a reload, the overlay page — and fails on any console error |
 
-The browser suite skips itself when Playwright is absent, so the project stays
+| `tests/stream.test.mjs` | the whole streaming path with ffmpeg stubbed: the studio encodes its canvas, PHP mints the ticket, the relay verifies it, and real WebM lands on the encoder's stdin with the stream key applied — then the relay is killed mid-broadcast and the studio has to get itself back on air |
+
+The browser and streaming suites skip themselves when Playwright is absent, so the project stays
 installable without npm. Point it at an existing install with
 `PLAYWRIGHT_PATH=/path/to/playwright/index.mjs`.
