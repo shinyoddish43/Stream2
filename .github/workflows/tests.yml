@@ -20,7 +20,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
+
+      - name: Install the relay's one dependency (used by its tests too)
+        run: npm install --no-save ws@8.18.0
 
       - name: Lint PHP
         run: find . -name '*.php' -not -path './node_modules/*' -print0 | xargs -0 -n1 php -l
@@ -33,6 +36,12 @@ jobs:
 
       - name: API tests
         run: bash tests/api.test.sh
+
+      - name: Relay tests
+        run: node tests/relay.test.mjs
+
+      - name: LiveSplit bridge tests
+        run: node tests/bridge.test.mjs
 
       - name: Install Playwright
         run: npm install --no-save playwright@1.49.0 && npx playwright install --with-deps chromium

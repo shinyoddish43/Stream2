@@ -15,6 +15,14 @@ php tests/php.test.php || STATUS=1
 echo "── api"
 bash tests/api.test.sh || STATUS=1
 
+echo "── relay"
+if command -v node >/dev/null 2>&1; then node tests/relay.test.mjs || STATUS=1
+else echo "skipped (node not installed)"; fi
+
+echo "── livesplit bridge"
+if command -v node >/dev/null 2>&1; then node tests/bridge.test.mjs || STATUS=1
+else echo "skipped (node not installed)"; fi
+
 echo "── browser"
 if command -v node >/dev/null 2>&1; then node tests/browser.test.mjs || STATUS=1
 else echo "skipped (node not installed)"; fi
