@@ -52,24 +52,25 @@ See README.md for features, install and tests.
   could claim the home IP); guest lock-down; fixed-address ranges;
   push.sh aborts on a failed unpack; 30-minute upload timeout; an expired
   hub sign-in in an open tab now says so instead of a CORS error.
-- **Not deployed yet**: the live steps (six7-hub.md §3) were blocked by the
-  agent's permission classifier and wait for the owner.
+- **Deployed September 24, 2026** at https://t.six7.pw (container
+  `streamstudio-studio-1`, commit df2dfaf; later commits change only tests
+  and CI). Checked live: Let's Encrypt certificate; anonymous requests and a
+  forged `X-Authentik-Username` + `X-Forwarded-For` from outside home both
+  go to the hub login; only Caddy (10.67.0.2) and the studio share
+  `six7_studio-edge`; no host ports; ffmpeg 7.1.5 in the image. The home
+  guest is refused (authentik "Permission denied"), as intended.
+- CI is green for the first time since 740d965 (52/52). Two old failures
+  fixed: nginx -t needs to bind port 80, which CI's ordinary user could not
+  (the workflow now lowers the unprivileged port range; elsewhere that part
+  skips with the reason), and the audio meter test sampled too sparsely.
 
 ## Not done
 
-- **Not deployed.** Target: `t.six7.pw`, DNS → 46.62.200.78. The previous
-  session ran in a sandbox with no SSH and no network access to that host.
-  From a machine with `ssh vps` working:
-  `ALLOW_IP=<home IP> deploy/push.sh vps t.six7.pw`
-  It detects the web server already on the VPS and adds a site next to it.
-  It has not yet been run on a real VPS or against real Twitch; use the
-  bandwidth-test option in Settings for the first stream.
-- **Shared login with the "six7 hub"** (open question from the owner). Not
-  investigated: the hub was not reachable. Feasible if the hub's session
-  cookie is scoped to `.six7.pw` and it can answer "is this session valid":
-  put the check in the reverse proxy (Caddy `forward_auth` / nginx
-  `auth_request`) and have server.js trust a user header from loopback only.
-  Otherwise the hub needs a cookie-domain change or a redirect login. Keep
-  the studio's own password until then: the studio can go live on the
-  owner's Twitch with the saved key.
+- **Not yet done by a person:** signing in to the studio as the owner (the
+  agent does not type passwords; at home use
+  https://login.six7.pw/if/flow/six7-sign-in/ once, then t.six7.pw), and a
+  real Twitch stream. Use the bandwidth-test option in Settings first.
+- Shared login with the hub: done (authentik forward auth, see above).
+  `deploy/install.sh` and `push.sh` remain for VPSes whose web server runs
+  on the host; they were not used for six7.
 - Known limit: timer hotkeys only fire while the studio tab has focus.
