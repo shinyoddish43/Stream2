@@ -60,8 +60,10 @@ const selected = () => active().sources.find((s) => s.id === compositor.selected
 // ----------------------------------------------------------------- server
 
 async function api(path, options = {}) {
-  const res = await fetch(path, { ...options, headers: { 'Content-Type': 'application/json', ...options.headers } });
+  const res = await fetch(path, { ...options, redirect: 'manual', headers: { 'Content-Type': 'application/json', ...options.headers } });
   if (res.status === 401) { location.href = '/login'; throw new Error('Signed out.'); }
+  // Behind the hub login, an expired sign-in comes back as a redirect to it.
+  if (res.type === 'opaqueredirect') throw new Error('Your sign-in has expired. Reload the page to sign in again.');
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error || `Request failed (${res.status})`);
   return body;

@@ -50,6 +50,11 @@ deploy/push.sh vps t.example.com                    # vps = your ssh host or ali
 ALLOW_IP=<your home IP> deploy/push.sh vps t.example.com
 ```
 
+**If the VPS's web server runs in Docker** (like the six7 hub), the installer
+leaves it alone. Run the studio as a container beside it instead, signed in
+through the hub's login: see [deploy/docker/six7-hub.md](deploy/docker/six7-hub.md),
+then `deploy/docker/push.sh vps`.
+
 **Or on the VPS itself:**
 
 ```bash
@@ -152,6 +157,7 @@ npm test
 | --- | --- |
 | `test/timer.test.mjs` | splits, PB, golds, undo/skip/reset, delta colours, time formats |
 | `test/server.test.mjs` | login, lockout, origin checks, storage, the write-only stream key, uploads, path traversal, the relay to ffmpeg |
-| `test/install.test.mjs` | the installer against real Caddy and nginx in scratch folders: another site already on the server is kept, a clash or a broken config is rolled back without a reload, reruns are idempotent, IPv6 only where the kernel has it; and `push.sh`'s remote command, quoting included |
+| `test/sso.test.mjs` | single sign-on: the user a trusted proxy names is signed in (pages, API, stream socket), others and other addresses are not, log out goes back through the hub, the password login still works |
+| `test/install.test.mjs` | the installer against real Caddy and nginx in scratch folders: another site already on the server is kept, a clash or a broken config is rolled back without a reload, reruns are idempotent, IPv6 only where the kernel has it; `push.sh`'s remote command, quoting included; and `deploy/docker/push.sh` shipping the working tree without touching your git index |
 | `test/twitch.test.mjs` | a real ffmpeg pushes to a local RTMP server standing in for Twitch; checks H.264 + AAC, frame rate, and a keyframe every 2 s (skipped without ffmpeg) |
 | `test/browser.test.mjs` | the studio in Chromium: sign in, add a device, key a green screen onto an uploaded background and check the pixels, drag, layouts, timer hotkeys, `.lss` round trip, mixer meters, going live (skipped without Playwright) |

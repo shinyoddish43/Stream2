@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "passwd": "node server.js passwd",
-    "test": "node --test --test-concurrency=1 test/timer.test.mjs test/server.test.mjs test/install.test.mjs test/twitch.test.mjs test/browser.test.mjs"
+    "test": "node --test --test-concurrency=1 test/timer.test.mjs test/server.test.mjs test/sso.test.mjs test/install.test.mjs test/twitch.test.mjs test/browser.test.mjs"
   },
   "engines": {
     "node": ">=18"

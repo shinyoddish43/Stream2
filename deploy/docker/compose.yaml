@@ -1,0 +1,35 @@
+# Stream Studio beside a Caddy that itself runs in Docker (the six7 hub).
+#
+#   docker compose -f deploy/docker/compose.yaml --env-file deploy/docker/six7.env up -d --build
+#
+# Two networks: "edge" is shared with the hub's Caddy and nothing else, and is
+# where requests arrive; "egress" lets ffmpeg reach Twitch. The hub creates
+# edge (six7_studio-edge) and gives its Caddy a fixed address there, which is
+# the only address the studio believes the sign-in header from (TRUST_PROXY).
+name: streamstudio
+services:
+  studio:
+    image: streamstudio:local
+    build: {context: ../.., dockerfile: deploy/docker/Dockerfile}
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 2g
+    cpus: 4
+    pids_limit: 256
+    environment:
+      TRUST_PROXY: ${TRUST_PROXY:?Set TRUST_PROXY to the proxy's address}
+      AUTH_HEADER: ${AUTH_HEADER:-}
+      AUTH_USERS: ${AUTH_USERS:-}
+      LOGOUT_URL: ${LOGOUT_URL:-}
+    volumes: ["data:/data"]
+    networks:
+      edge: {aliases: [studio]}
+      egress: {}
+networks:
+  edge: {name: six7_studio-edge, external: true}
+  egress: {}
+volumes:
+  data: {}

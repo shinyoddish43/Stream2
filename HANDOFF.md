@@ -28,6 +28,33 @@ See README.md for features, install and tests.
   2.8.4 and nginx 1.24) and shellcheck. The last fresh run of the *entire*
   suite after those changes was interrupted, so run `npm test` once first.
 
+## Since then (September 24)
+
+- The failing test was the test, not push.sh: it stubbed ssh/scp/env but not
+  sudo, so it only passed as root. Fixed.
+- The six7 VPS runs Caddy **in Docker** (`six7-proxy-1`), so install.sh sees
+  no Caddy/nginx and skips the web side. New container deploy for that case:
+  `deploy/docker/` (Dockerfile, compose, `push.sh`, `authentik_setup.py`,
+  and `six7-hub.md` with the hub changes and the order of work).
+- Single sign-on with the hub: the hub login is authentik (login.six7.pw).
+  server.js accepts `AUTH_HEADER` (+ `AUTH_USERS`, `LOGOUT_URL`) from a proxy
+  listed in `TRUST_PROXY`; see test/sso.test.mjs. Password login still works
+  when the header is absent.
+- Home network: the owner chose "every device at home is signed in to a
+  shared guest account; anyone can sign in to their real account, which then
+  stays on that device". That lives in the hub repo
+  (`scripts/home_network_sign_in.py`, `docs/SECURITY-WATCHLIST.md`); the
+  guest is refused by the studio, so going live needs a real sign-in.
+- Reviewed adversarially before deploy (4 independent reviewers, read-only on
+  the VPS). Fixed from it: the proxy provider now gets authentik's OAuth
+  defaults (without them sign-in failed with a redirect URI error); authentik
+  must trust `X-Forwarded-For` from the hub Caddy alone (else the VPS host
+  could claim the home IP); guest lock-down; fixed-address ranges;
+  push.sh aborts on a failed unpack; 30-minute upload timeout; an expired
+  hub sign-in in an open tab now says so instead of a CORS error.
+- **Not deployed yet**: the live steps (six7-hub.md §3) were blocked by the
+  agent's permission classifier and wait for the owner.
+
 ## Not done
 
 - **Not deployed.** Target: `t.six7.pw`, DNS → 46.62.200.78. The previous

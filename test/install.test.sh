@@ -118,13 +118,34 @@ for a in "\$@"; do printf '%s\n' "\$a"; done > "$WORK/push-args"
 last=\$(eval echo "\\\${\$((\$# - 1))}")
 [ -f "\$last" ] && echo present > "$WORK/push-script"
 S
-chmod +x "$STUB/scp" "$STUB/ssh" "$STUB/env"
+cat > "$STUB/sudo" <<'S'
+#!/bin/sh
+# push.sh uses sudo unless it is already root on the server
+exec "$@"
+S
+chmod +x "$STUB/scp" "$STUB/ssh" "$STUB/env" "$STUB/sudo"
 ( cd "$ROOT" && PATH="$STUB:$PATH" ALLOW_IP=203.0.113.7 EMAIL='me and you@example.com' PORT='' \
     bash deploy/push.sh fakehost t.six7.pw ) > "$WORK/push-out" 2>&1
 check "push: the app reaches the server and the installer is run from it" "grep -qx present '$WORK/push-script'"
 check "push: settings arrive intact, spaces and all" "grep -qx 'ALLOW_IP=203.0.113.7' '$WORK/push-args' && grep -qx 'EMAIL=me and you@example.com' '$WORK/push-args' && grep -qx 'PORT=8787' '$WORK/push-args'"
 check "push: the domain is passed to the installer" "tail -1 '$WORK/push-args' | grep -qx 't.six7.pw'"
 check "push: the upload is cleaned up" "[ ! -e /tmp/streamstudio.tgz ]"
+
+# ---- deploy/docker/push.sh: ships the working tree, new files included, and
+# leaves your git index alone. ssh is stubbed to record the remote script.
+cat > "$STUB/ssh" <<S
+#!/bin/sh
+printf '%s' "\$2" > "$WORK/docker-remote"
+S
+chmod +x "$STUB/ssh"
+before="$(cd "$ROOT" && git status --porcelain)"
+( cd "$ROOT" && PATH="$STUB:$PATH" bash deploy/docker/push.sh fakehost ) > "$WORK/docker-out" 2>&1
+# Listed to a file first: grep -q stopping early would SIGPIPE tar under pipefail.
+tar -tzf /tmp/streamstudio.tgz > "$WORK/docker-files" 2>/dev/null; rm -f /tmp/streamstudio.tgz
+check "docker push: the app and the container files are shipped" "grep -qx server.js '$WORK/docker-files' && grep -qx deploy/docker/Dockerfile '$WORK/docker-files'"
+check "docker push: git-ignored files stay home" "! grep -q '^node_modules/' '$WORK/docker-files'"
+check "docker push: your git index is untouched" "[ \"\$(cd '$ROOT' && git status --porcelain)\" = \"\$before\" ]"
+check "docker push: the server builds and starts the container" "grep -q 'up -d --build --wait' '$WORK/docker-remote'"
 
 echo "install: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

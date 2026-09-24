@@ -19,11 +19,11 @@ export function stubFfmpeg(dir) {
   return stub;
 }
 
-export async function startServer(env = {}) {
+export async function startServer(env = {}, { password = true } = {}) {
   const data = mkdtempSync(join(tmpdir(), 'studio-test-'));
   const port = nextPort++;
   const base = { ...process.env, DATA_DIR: data, PORT: String(port), FFMPEG: stubFfmpeg(data), ...env };
-  execFileSync('node', [join(ROOT, 'server.js'), 'passwd'], { env: { ...base, STUDIO_USER: USER, STUDIO_PASSWORD: PASSWORD } });
+  if (password) execFileSync('node', [join(ROOT, 'server.js'), 'passwd'], { env: { ...base, STUDIO_USER: USER, STUDIO_PASSWORD: PASSWORD } });
   const proc = spawn('node', [join(ROOT, 'server.js')], { env: base, stdio: ['ignore', 'pipe', 'pipe'] });
   let log = '';
   proc.stdout.on('data', (d) => { log += d; });

@@ -13,12 +13,23 @@
  * Environment:
  *   PORT=8080  HOST=127.0.0.1  DATA_DIR=./data  FFMPEG=ffmpeg
  *   VIDEO_MODE=transcode|copy  X264_PRESET=veryfast  MAX_UPLOAD_MB=200
+ *
+ * Behind a reverse proxy that is not on loopback (Caddy in another container):
+ *   TRUST_PROXY=10.67.0.2        its address(es), IPs or CIDRs, comma-separated
+ *
+ * Single sign-on, when that proxy checks a login of its own first (authentik):
+ *   AUTH_HEADER=X-Authentik-Username   the header naming who signed in
+ *   AUTH_USERS=Oddish                  optional: only these users get in
+ *   LOGOUT_URL=/outpost.goauthentik.io/sign_out   where "Log out" goes
+ * The header is believed only from TRUST_PROXY or loopback, and the proxy must
+ * drop any copy of it the browser sends. The password login keeps working.
  */
 
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const net = require('net');
 const readline = require('readline');
 const { spawn } = require('child_process');
 const { WebSocketServer } = require('ws');
@@ -35,6 +46,22 @@ const X264_PRESET = process.env.X264_PRESET || 'veryfast';
 const MAX_UPLOAD = Number(process.env.MAX_UPLOAD_MB || 200) * 1024 * 1024;
 const SESSION_MS = 14 * 24 * 3600 * 1000;
 const DEFAULT_INGEST = 'rtmp://live.twitch.tv/app';
+
+// Proxies whose X-Forwarded-* and AUTH_HEADER are believed. Loopback always is.
+const TRUSTED = new net.BlockList();
+for (const entry of String(process.env.TRUST_PROXY || '').split(',').map((s) => s.trim()).filter(Boolean)) {
+  const [addr, bits] = entry.split('/');
+  const type = net.isIPv6(addr) ? 'ipv6' : 'ipv4';
+  if (!net.isIP(addr) || (bits !== undefined && !/^\d+$/.test(bits))) {
+    console.error(`TRUST_PROXY: not an address or CIDR: ${entry}`);
+    process.exit(1);
+  }
+  if (bits === undefined) TRUSTED.addAddress(addr, type);
+  else TRUSTED.addSubnet(addr, Number(bits), type);
+}
+const AUTH_HEADER = String(process.env.AUTH_HEADER || '').trim().toLowerCase();
+const AUTH_USERS = new Set(String(process.env.AUTH_USERS || '').split(',').map((s) => s.trim()).filter(Boolean));
+const LOGOUT_URL = process.env.LOGOUT_URL || '';
 
 // Pages and files reachable without logging in. Everything else needs a session.
 const PUBLIC_FILES = new Set(['/login', '/login.html', '/login.js', '/app.css', '/favicon.svg']);
@@ -139,7 +166,7 @@ function sessionOf(req) {
 }
 
 function isHttps(req) {
-  return req.socket.encrypted || (isLoopback(req) && req.headers['x-forwarded-proto'] === 'https');
+  return req.socket.encrypted || (fromProxy(req) && req.headers['x-forwarded-proto'] === 'https');
 }
 
 function isLoopback(req) {
@@ -147,12 +174,31 @@ function isLoopback(req) {
   return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
 }
 
+function fromProxy(req) {
+  if (isLoopback(req)) return true;
+  const a = String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+  return net.isIP(a) !== 0 && TRUSTED.check(a, net.isIPv6(a) ? 'ipv6' : 'ipv4');
+}
+
 // Behind Caddy the real address is the last X-Forwarded-For entry, which
-// Caddy itself adds. Only believe the header from a loopback peer.
+// Caddy itself adds. Only believe the header from the proxy.
 function clientIp(req) {
   const forwarded = req.headers['x-forwarded-for'];
-  if (forwarded && isLoopback(req)) return String(forwarded).split(',').pop().trim();
+  if (forwarded && fromProxy(req)) return String(forwarded).split(',').pop().trim();
   return req.socket.remoteAddress || '';
+}
+
+// Single sign-on: the proxy has already checked the hub login and names the
+// user. Anyone else sending the header is ignored.
+function proxyUser(req) {
+  if (!AUTH_HEADER || !fromProxy(req)) return null;
+  const user = String(req.headers[AUTH_HEADER] || '').trim();
+  if (!user || (AUTH_USERS.size && !AUTH_USERS.has(user))) return null;
+  return user;
+}
+
+function signedIn(req) {
+  return !!(proxyUser(req) || sessionOf(req));
 }
 
 // A request that changes something, or opens the stream socket, must come
@@ -289,7 +335,15 @@ async function route(req, res) {
   if (p === '/api/logout' && method === 'POST') {
     const token = sessionOf(req);
     if (token) sessions.delete(token);
-    res.writeHead(303, { Location: '/login', 'Set-Cookie': 'ss=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0' });
+    // Under single sign-on /login would just sign you straight back in.
+    const next = (proxyUser(req) && LOGOUT_URL) || '/login';
+    res.writeHead(303, { Location: next, 'Set-Cookie': 'ss=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0' });
+    res.end();
+    return;
+  }
+
+  if ((p === '/login' || p === '/login.html') && method === 'GET' && proxyUser(req)) {
+    res.writeHead(303, { Location: '/' });
     res.end();
     return;
   }
@@ -300,7 +354,7 @@ async function route(req, res) {
   }
 
   // ---- everything below needs a session
-  if (!sessionOf(req)) {
+  if (!signedIn(req)) {
     if (method === 'GET' && !p.startsWith('/api/')) { res.writeHead(303, { Location: '/login' }); res.end(); return; }
     throw fail(401, 'not logged in');
   }
@@ -467,7 +521,7 @@ function relay(ws) {
 // ----------------------------------------------------------------- start
 
 function start() {
-  if (!readJson('auth.json', null)) {
+  if (!AUTH_HEADER && !readJson('auth.json', null)) {
     console.error('No login is set. Run:  node server.js passwd');
     process.exit(1);
   }
@@ -477,10 +531,13 @@ function start() {
       if (!res.headersSent) send(res, e.status || 500, { error: e.status ? e.message : 'server error' });
     });
   });
+  // Node's default 5-minute limit per request would cut off a 200 MB
+  // background upload on a home uplink slower than about 5 Mbit/s.
+  server.requestTimeout = 30 * 60e3;
   const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
   server.on('upgrade', (req, socket, head) => {
     let allowed = false;
-    try { allowed = new URL(req.url, 'http://local').pathname === '/api/stream' && !!sessionOf(req) && sameOrigin(req); } catch { /* refused below */ }
+    try { allowed = new URL(req.url, 'http://local').pathname === '/api/stream' && signedIn(req) && sameOrigin(req); } catch { /* refused below */ }
     if (!allowed) { socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n'); return; }
     wss.handleUpgrade(req, socket, head, relay);
   });
@@ -488,7 +545,8 @@ function start() {
     console.error(e.code === 'EADDRINUSE' ? `Port ${PORT} is already in use.` : e.message);
     process.exit(1);
   });
-  server.listen(PORT, HOST, () => console.log(`Stream Studio on http://${HOST}:${PORT}  (data: ${DATA}, video: ${VIDEO_MODE})`));
+  const sso = AUTH_HEADER ? `, sign-in: ${AUTH_HEADER}` : '';
+  server.listen(PORT, HOST, () => console.log(`Stream Studio on http://${HOST}:${PORT}  (data: ${DATA}, video: ${VIDEO_MODE}${sso})`));
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { wss.clients.forEach((c) => c.close()); server.close(); process.exit(0); });
 }
 
