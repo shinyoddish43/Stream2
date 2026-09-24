@@ -227,9 +227,11 @@ test('audio inputs appear in the mixer with a live meter', { skip }, async () =>
   const moving = await page.evaluate(async () => {
     await window.studio.mixer.resume();
     // Chromium's fake microphone beeps with silence between; wait for a beep.
-    for (let i = 0; i < 40; i++) {
+    // Each reading covers the analyser's last ~43 ms, so read every 20 ms:
+    // at 100 ms a short beep could fall between readings, again and again.
+    for (let i = 0; i < 300; i++) {
       if (Object.values(window.studio.mixer.levels()).some((v) => v > 0.001)) return true;
-      await new Promise((r) => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, 20));
     }
     return false;
   });

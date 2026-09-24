@@ -9,6 +9,8 @@ jobs:
         with: { node-version: '22' }
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg nginx caddy
       - run: npm ci
+      # The tests run as an ordinary user; nginx -t binds port 80, as it would as root.
+      - run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
       - run: npx --yes playwright@1.49.0 install --with-deps chromium
       - run: npm install --no-save playwright@1.49.0
       - run: npm test

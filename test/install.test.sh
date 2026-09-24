@@ -54,7 +54,13 @@ else
   echo "skip - caddy is not installed"
 fi
 
-if command -v nginx >/dev/null; then
+# nginx -t binds the ports it will listen on, so it needs port 80: root, or
+# an unprivileged port range that starts at 80 or below.
+can_bind_80() { [ "$(id -u)" = 0 ] || [ "$(cat /proc/sys/net/ipv4/ip_unprivileged_port_start 2>/dev/null || echo 1024)" -le 80 ]; }
+
+if command -v nginx >/dev/null && ! can_bind_80; then
+  echo "skip - nginx -t must bind port 80: run as root, or set net.ipv4.ip_unprivileged_port_start=0"
+elif command -v nginx >/dev/null; then
   N="$NGINX_DIR/nginx.conf"
   mkdir -p "$NGINX_DIR/sites-available" "$NGINX_DIR/sites-enabled" "$WORK/bin" "$WORK/nginx-tmp"
   # A stand-in hub, plus an existing Upgrade map of its own, as many setups have.
