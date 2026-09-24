@@ -83,6 +83,8 @@ CONF
   ntest() { nginx -t -c "$N" >/dev/null 2>&1; }
 
   ( setup_nginx ) > "$WORK/n1" 2>&1
+  # When nginx refuses the site, its reason is the useful part of a failure.
+  [ -L "$NGINX_DIR/sites-enabled/streamstudio.conf" ] || sed 's/^/    setup_nginx: /' "$WORK/n1"
   check "nginx: the existing config is untouched" "cmp -s '$WORK/hub-nginx' '$N'"
   check "nginx: the site is added and enabled" "[ -L '$NGINX_DIR/sites-enabled/streamstudio.conf' ]"
   check "nginx: IPv6 is listened on only where the kernel has it" "if [ -e /proc/net/if_inet6 ]; then grep -q 'listen \[::\]:80' '$NGINX_DIR/sites-available/streamstudio.conf'; else ! grep -q '\[::\]' '$NGINX_DIR/sites-available/streamstudio.conf'; fi"
