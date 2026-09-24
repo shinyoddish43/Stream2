@@ -39,42 +39,44 @@ That is the whole feature list, on purpose.
 ## Put it on your VPS
 
 Needs Ubuntu 22.04+ or Debian 12, and Node 18 or newer (Ubuntu 24.04 and
-Debian 12 ship it; on 22.04 install Node from nodejs.org first).
+Debian 12 ship it; on 22.04 install Node from nodejs.org first). Point the
+domain's DNS at the VPS before you start.
+
+**From your own computer**, if you can already `ssh` into the VPS, one command
+copies the app up and installs it:
+
+```bash
+deploy/push.sh vps t.example.com                    # vps = your ssh host or alias
+ALLOW_IP=<your home IP> deploy/push.sh vps t.example.com
+```
+
+**Or on the VPS itself:**
 
 ```bash
 git clone https://github.com/shinyoddish43/Stream2 && cd Stream2
+sudo bash deploy/install.sh t.example.com
 ```
 
-Then pick one:
+`ALLOW_IP` is optional but worth it: with it, only your home connection can even
+reach the login page. (If your home IP changes now and then, rerun with the new
+one.) The first run asks you to choose the studio's username and password.
 
-**A. Your own domain, HTTPS, login** (recommended). Point a DNS record at the
-VPS, then:
+**It shares the server politely.** If Caddy or nginx already runs other sites
+on the VPS, the installer adds `t.example.com` as one more site, checks the
+combined configuration with the web server itself, and puts everything back
+if that check fails — your other sites are never replaced. With nginx it also
+gets the HTTPS certificate through certbot; Caddy does that on its own. With
+no web server yet, it installs Caddy. With some other web server it leaves it
+alone and tells you what to proxy. The app listens on `127.0.0.1:8787`; set
+`PORT=` if that is taken.
 
-```bash
-sudo ALLOW_IP=<your home IP> bash deploy/install.sh studio.example.com
-```
+**No domain, nothing exposed:** `sudo bash deploy/install.sh` with no domain,
+then from your PC `ssh -N -L 8787:127.0.0.1:8787 you@your-vps` and open
+`http://localhost:8787`. (Browsers allow cameras on `localhost` and on HTTPS —
+never on plain `http://` to a remote address.)
 
-`ALLOW_IP` is optional but worth it: with it, nobody but your home connection
-can even reach the login page. Caddy is installed and gets the HTTPS
-certificate by itself. Open `https://studio.example.com` from home.
-
-**B. No domain, nothing exposed.** Only reachable through SSH:
-
-```bash
-sudo bash deploy/install.sh
-```
-
-then from your PC:
-
-```bash
-ssh -N -L 8080:127.0.0.1:8080 you@your-vps
-```
-
-and open `http://localhost:8080`. (Browsers allow cameras on `localhost`, and on
-HTTPS — never on plain `http://` to a remote address.)
-
-Either way the installer asks you to choose the username and password. Change
-it later with `sudo -u streamstudio DATA_DIR=/var/lib/streamstudio node /opt/streamstudio/server.js passwd`.
+Change the password later with
+`sudo -u streamstudio DATA_DIR=/var/lib/streamstudio node /opt/streamstudio/server.js passwd`.
 
 ### What protects it
 
@@ -127,7 +129,7 @@ focus.
 - **Browser.** Chrome or Edge. Give the studio its own window. It keeps drawing
   frames when the window is in the background, and if the machine cannot keep up
   the frame rate drops rather than the stream stalling.
-- **Updating.** `git pull && sudo bash deploy/install.sh <same arguments>`. Your
+- **Updating.** Run `deploy/push.sh` (or `install.sh`) again with the same arguments. Your
   login, layouts, splits, key and backgrounds live in `/var/lib/streamstudio` and
   are left alone. Back up that directory.
 - **Logs.** `journalctl -u streamstudio -f`
@@ -150,5 +152,6 @@ npm test
 | --- | --- |
 | `test/timer.test.mjs` | splits, PB, golds, undo/skip/reset, delta colours, time formats |
 | `test/server.test.mjs` | login, lockout, origin checks, storage, the write-only stream key, uploads, path traversal, the relay to ffmpeg |
+| `test/install.test.mjs` | the installer against real Caddy and nginx in scratch folders: another site already on the server is kept, a clash or a broken config is rolled back without a reload, reruns are idempotent, IPv6 only where the kernel has it; and `push.sh`'s remote command, quoting included |
 | `test/twitch.test.mjs` | a real ffmpeg pushes to a local RTMP server standing in for Twitch; checks H.264 + AAC, frame rate, and a keyframe every 2 s (skipped without ffmpeg) |
 | `test/browser.test.mjs` | the studio in Chromium: sign in, add a device, key a green screen onto an uploaded background and check the pixels, drag, layouts, timer hotkeys, `.lss` round trip, mixer meters, going live (skipped without Playwright) |

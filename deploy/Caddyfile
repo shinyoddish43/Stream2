@@ -6,5 +6,5 @@ studio.example.com {
 	# @notHome not remote_ip 203.0.113.7
 	# respond @notHome 403
 
-	reverse_proxy 127.0.0.1:8080
+	reverse_proxy 127.0.0.1:8787
 }

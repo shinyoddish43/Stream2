@@ -7,7 +7,7 @@ Wants=network-online.target
 User=streamstudio
 Group=streamstudio
 Environment=DATA_DIR=/var/lib/streamstudio
-Environment=PORT=8080
+Environment=PORT=8787
 # Loopback only: the outside world reaches it through Caddy (HTTPS) or an SSH tunnel.
 Environment=HOST=127.0.0.1
 ExecStart=/usr/bin/node /opt/streamstudio/server.js
