@@ -56,7 +56,7 @@ fi
 
 if command -v nginx >/dev/null; then
   N="$NGINX_DIR/nginx.conf"
-  mkdir -p "$NGINX_DIR/sites-available" "$NGINX_DIR/sites-enabled" "$WORK/bin"
+  mkdir -p "$NGINX_DIR/sites-available" "$NGINX_DIR/sites-enabled" "$WORK/bin" "$WORK/nginx-tmp"
   # A stand-in hub, plus an existing Upgrade map of its own, as many setups have.
   cat > "$N" <<CONF
 pid $WORK/nginx.pid;
@@ -64,6 +64,13 @@ error_log $WORK/error.log;
 events {}
 http {
     access_log off;
+    # Scratch temp paths: as an ordinary user (CI) nginx -t cannot create the
+    # packaged ones under /var/lib/nginx, and fails before judging the site.
+    client_body_temp_path $WORK/nginx-tmp/body;
+    proxy_temp_path $WORK/nginx-tmp/proxy;
+    fastcgi_temp_path $WORK/nginx-tmp/fastcgi;
+    uwsgi_temp_path $WORK/nginx-tmp/uwsgi;
+    scgi_temp_path $WORK/nginx-tmp/scgi;
     map \$http_upgrade \$connection_upgrade { default upgrade; '' close; }
     server { listen 127.0.0.1:18080; server_name hub.six7.pw; location / { return 200 'hub'; } }
     include $NGINX_DIR/sites-enabled/*;
