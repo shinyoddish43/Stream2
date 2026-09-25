@@ -24,6 +24,24 @@ after(() => server.stop());
 
 const get = (url, headers = {}) => fetch(url, { redirect: 'manual', headers });
 
+test('a hub origin is passed to the page, and a bad one stops the server', async () => {
+  const hub = await startServer({ ...SSO, HUB_ORIGIN: 'https://hub.example.com' }, { password: false });
+  try {
+    const state = await (await get(`${hub.url}/api/state`, as('owner'))).json();
+    assert.equal(state.settings.hubOrigin, 'https://hub.example.com');
+  } finally { hub.stop(); }
+  const plain = await (await get(`${server.url}/api/state`, as('owner'))).json();
+  assert.equal(plain.settings.hubOrigin, '', 'off unless set');
+  for (const bad of ['http://hub.example.com', 'https://hub.example.com/path', 'hub.example.com']) {
+    const run = spawnSync('node', [join(ROOT, 'server.js')], {
+      env: { ...process.env, ...SSO, HUB_ORIGIN: bad, PORT: '1', DATA_DIR: mkdtempSync(join(tmpdir(), 'studio-hub-')) },
+      encoding: 'utf8', timeout: 10000,
+    });
+    assert.notEqual(run.status, 0, bad);
+    assert.match(run.stderr, /HUB_ORIGIN/);
+  }
+});
+
 test('with single sign-on the server starts without a password of its own', async () => {
   assert.equal((await get(`${server.url}/healthz`)).status, 200);
 });

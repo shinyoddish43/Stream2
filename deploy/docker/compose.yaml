@@ -24,6 +24,7 @@ services:
       AUTH_HEADER: ${AUTH_HEADER:-}
       AUTH_USERS: ${AUTH_USERS:-}
       LOGOUT_URL: ${LOGOUT_URL:-}
+      HUB_ORIGIN: ${HUB_ORIGIN:-}
     volumes: ["data:/data"]
     networks:
       edge: {aliases: [studio]}

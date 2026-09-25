@@ -627,6 +627,46 @@ $('streamButton').addEventListener('click', async () => {
   streamer.start({ ...doc.output });
 });
 
+// "Go live" from a hub dashboard (HUB_ORIGIN on the server, the six7 hub). The
+// hub opens this studio in a window of its own; when the page is ready it says
+// so to the window that opened it, and only a message from the hub's origin
+// starts the stream. A link alone never starts anything.
+function hubLink(hubOrigin) {
+  if (!hubOrigin) return;
+  window.addEventListener('message', async (event) => {
+    if (event.origin !== hubOrigin || !event.data || event.data.type !== 'six7-golive') return;
+    const reply = (state) => {
+      try { event.source.postMessage({ type: 'six7-golive-ack', state }, hubOrigin); } catch { /* hub closed */ }
+    };
+    if (streamer.live) { reply('already-live'); return; }
+    reply(await goLive());
+  });
+  if (window.opener) {
+    try { window.opener.postMessage({ type: 'six7-studio-ready' }, hubOrigin); } catch { /* opener gone */ }
+  }
+}
+
+// Start as if "Start streaming" was clicked. Browsers keep sound off until a
+// page has been clicked once; if that is why the mixer is still asleep, one
+// full-window button asks for the click instead of streaming silence.
+async function goLive() {
+  await Promise.race([mixer.resume(), new Promise((resolve) => setTimeout(resolve, 500))]);
+  if (mixer.ctx.state !== 'running') {
+    $('goLiveOverlay').hidden = false;
+    $('goLiveNow').focus();
+    return 'needs-click';
+  }
+  streamer.start({ ...doc.output });
+  return 'starting';
+}
+
+$('goLiveNow').addEventListener('click', async () => {
+  $('goLiveOverlay').hidden = true;
+  await mixer.resume();
+  if (!streamer.live) streamer.start({ ...doc.output });
+});
+$('goLiveCancel').addEventListener('click', () => { $('goLiveOverlay').hidden = true; });
+
 function showStatus({ state, message, kbps, seconds, backlog }) {
   const el = $('streamStatus');
   el.dataset.state = state;
@@ -682,6 +722,7 @@ async function boot() {
   openSavedAudio();
   setInterval(tick, 100);
   document.addEventListener('click', () => mixer.resume(), { once: true });
+  hubLink(settings.hubOrigin);
 }
 
 boot().catch((e) => showStatus({ state: 'error', message: e.message }));

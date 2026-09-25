@@ -23,6 +23,10 @@
  *   LOGOUT_URL=/outpost.goauthentik.io/sign_out   where "Log out" goes
  * The header is believed only from TRUST_PROXY or loopback, and the proxy must
  * drop any copy of it the browser sends. The password login keeps working.
+ *
+ * A hub dashboard with a "Go live" button (the six7 hub):
+ *   HUB_ORIGIN=https://sylveon.six7.pw   the one page origin whose messages may
+ *   start a stream in an open studio window (see public/app.js); unset: off.
  */
 
 const http = require('http');
@@ -62,6 +66,15 @@ for (const entry of String(process.env.TRUST_PROXY || '').split(',').map((s) => 
 const AUTH_HEADER = String(process.env.AUTH_HEADER || '').trim().toLowerCase();
 const AUTH_USERS = new Set(String(process.env.AUTH_USERS || '').split(',').map((s) => s.trim()).filter(Boolean));
 const LOGOUT_URL = process.env.LOGOUT_URL || '';
+const HUB_ORIGIN = String(process.env.HUB_ORIGIN || '').trim();
+if (HUB_ORIGIN) {
+  let ok = false;
+  try { const u = new URL(HUB_ORIGIN); ok = u.protocol === 'https:' && u.origin === HUB_ORIGIN; } catch { /* not a URL */ }
+  if (!ok) {
+    console.error(`HUB_ORIGIN: not an https origin like https://hub.example.com: ${HUB_ORIGIN}`);
+    process.exit(1);
+  }
+}
 
 // Pages and files reachable without logging in. Everything else needs a session.
 const PUBLIC_FILES = new Set(['/login', '/login.html', '/login.js', '/app.css', '/favicon.svg']);
@@ -292,7 +305,7 @@ function serveFile(req, res, file, cacheable) {
 
 function publicSettings() {
   const s = readJson('settings.json', {});
-  return { ingest: s.ingest || DEFAULT_INGEST, hasKey: !!s.streamKey, testMode: !!s.testMode };
+  return { ingest: s.ingest || DEFAULT_INGEST, hasKey: !!s.streamKey, testMode: !!s.testMode, hubOrigin: HUB_ORIGIN };
 }
 
 // Remove uploads no layout refers to any more. The grace period keeps a file
