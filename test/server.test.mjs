@@ -82,6 +82,45 @@ test('layouts and splits are saved and read back', async () => {
   assert.equal((await api('/api/layouts', { method: 'PUT', body: '{"nope":1}' })).status, 400);
 });
 
+test('layouts keep a revision, so a stale browser cannot overwrite a newer save', async () => {
+  const put = (doc) => api('/api/layouts', { method: 'PUT', body: JSON.stringify(doc) });
+  let { rev } = await (await api('/api/layouts')).json();
+  const first = await put({ layouts: [{ id: 'a', name: 'Desk', sources: [] }], active: 'a', rev });
+  assert.equal(first.status, 200);
+  const saved = (await first.json()).rev;
+  assert.equal(saved, rev + 1);
+
+  // Another device still on the old revision is told what is there now.
+  const stale = await put({ layouts: [{ id: 'a', name: 'Laptop', sources: [] }], active: 'a', rev });
+  assert.equal(stale.status, 409);
+  const conflict = await stale.json();
+  assert.equal(conflict.rev, saved);
+  assert.equal(conflict.doc.layouts[0].name, 'Desk');
+
+  // Polling: nothing new is a short answer; a newer save comes with the layouts.
+  assert.deepEqual(await (await api(`/api/layouts?since=${saved}`)).json(), { rev: saved });
+  const fresh = await (await api(`/api/layouts?since=${rev}`)).json();
+  assert.equal(fresh.rev, saved);
+  assert.equal(fresh.doc.layouts[0].name, 'Desk');
+  assert.equal((await (await api('/api/state')).json()).layouts.rev, saved, 'the page learns the revision on load');
+
+  // A page from before revisions sends none and still saves.
+  assert.equal((await put({ layouts: [{ id: 'a', name: 'Old tab', sources: [] }], active: 'a' })).status, 200);
+  assert.equal((await (await api('/api/layouts')).json()).rev, saved + 1);
+});
+
+test('the Twitch server is the global ingest, and the old address moves to it', async () => {
+  const fresh = await startServer();
+  const call = await login(fresh.url);
+  const ingest = async () => (await (await call('/api/state')).json()).settings.ingest;
+  assert.equal(await ingest(), 'rtmp://ingest.global-contribute.live-video.net/app');
+  await call('/api/settings', { method: 'PUT', body: JSON.stringify({ ingest: 'rtmp://live.twitch.tv/app' }) });
+  assert.equal(await ingest(), 'rtmp://ingest.global-contribute.live-video.net/app');
+  await call('/api/settings', { method: 'PUT', body: JSON.stringify({ ingest: 'rtmp://usw20.contribute.live-video.net/app' }) });
+  assert.equal(await ingest(), 'rtmp://usw20.contribute.live-video.net/app', 'a chosen regional server is kept');
+  fresh.stop();
+});
+
 test('the stream key is stored but never sent back', async () => {
   let res = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ streamKey: 'live_123456_abcdefSECRET', ingest: 'rtmp://live.twitch.tv/app' }) });
   assert.equal(res.status, 200);
@@ -156,7 +195,7 @@ test('streaming pipes the browser’s bytes into ffmpeg, pointed at Twitch', asy
   s.ws.send(JSON.stringify({ type: 'stop' }));
   await wait(500);
   const args = readFileSync(join(server.data, 'args.txt'), 'utf8').split('\n');
-  assert.ok(args.includes('rtmp://live.twitch.tv/app/live_123456_abcdefSECRET'), 'wrong target');
+  assert.ok(args.includes('rtmp://ingest.global-contribute.live-video.net/app/live_123456_abcdefSECRET'), 'wrong target');
   assert.ok(args.includes('libx264'));
   assert.equal(args[args.indexOf('-g') + 1], '120', 'keyframe every two seconds at 60 fps');
   assert.equal(args[args.indexOf('-b:v') + 1], '6000k');

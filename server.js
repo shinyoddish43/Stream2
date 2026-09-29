@@ -49,7 +49,10 @@ const VIDEO_MODE = process.env.VIDEO_MODE === 'copy' ? 'copy' : 'transcode';
 const X264_PRESET = process.env.X264_PRESET || 'veryfast';
 const MAX_UPLOAD = Number(process.env.MAX_UPLOAD_MB || 200) * 1024 * 1024;
 const SESSION_MS = 14 * 24 * 3600 * 1000;
-const DEFAULT_INGEST = 'rtmp://live.twitch.tv/app';
+// Twitch's global ingest: it routes each stream to the nearest server. The old
+// single address is still accepted but moved over to this one.
+const DEFAULT_INGEST = 'rtmp://ingest.global-contribute.live-video.net/app';
+const LEGACY_INGEST = 'rtmp://live.twitch.tv/app';
 
 // Proxies whose X-Forwarded-* and AUTH_HEADER are believed. Loopback always is.
 const TRUSTED = new net.BlockList();
@@ -303,9 +306,11 @@ function serveFile(req, res, file, cacheable) {
   });
 }
 
+const ingestOf = (s) => (!s.ingest || s.ingest === LEGACY_INGEST ? DEFAULT_INGEST : s.ingest);
+
 function publicSettings() {
   const s = readJson('settings.json', {});
-  return { ingest: s.ingest || DEFAULT_INGEST, hasKey: !!s.streamKey, testMode: !!s.testMode, hubOrigin: HUB_ORIGIN };
+  return { ingest: ingestOf(s), hasKey: !!s.streamKey, testMode: !!s.testMode, hubOrigin: HUB_ORIGIN };
 }
 
 // Remove uploads no layout refers to any more. The grace period keeps a file
@@ -378,12 +383,31 @@ async function route(req, res) {
     return;
   }
 
+  // Layouts carry a revision so every browser and device works on the same
+  // copy: a save based on an older revision is refused with what is saved now,
+  // and an open page asks for the revision now and then to pick up changes.
+  if (p === '/api/layouts' && method === 'GET') {
+    const saved = readJson('layouts.json', null);
+    const rev = (saved && saved.rev) || 0;
+    if (url.searchParams.get('since') === String(rev)) { send(res, 200, { rev }); return; }
+    send(res, 200, { rev, doc: saved });
+    return;
+  }
+
   if (p === '/api/layouts' && method === 'PUT') {
     const doc = await readJsonBody(req, 1024 * 1024);
     if (!doc || !Array.isArray(doc.layouts)) throw fail(400, 'layouts must be a list');
-    writeJson('layouts.json', doc);
-    collectMedia(doc);
-    send(res, 200, { ok: true });
+    const saved = readJson('layouts.json', null);
+    const rev = (saved && saved.rev) || 0;
+    // A save without a revision (a page from before revisions) simply wins.
+    if (doc.rev !== undefined && doc.rev !== rev) {
+      send(res, 409, { error: 'Changed in another window or on another device.', rev, doc: saved });
+      return;
+    }
+    const next = { ...doc, rev: rev + 1, savedAt: new Date().toISOString() };
+    writeJson('layouts.json', next);
+    collectMedia(next);
+    send(res, 200, { ok: true, rev: next.rev });
     return;
   }
 
@@ -400,7 +424,7 @@ async function route(req, res) {
     const s = readJson('settings.json', {});
     if (body.ingest !== undefined) {
       const ingest = String(body.ingest).trim().replace(/\/+$/, '');
-      if (!/^rtmps?:\/\/[A-Za-z0-9.-]+(:\d+)?(\/[A-Za-z0-9._\/-]*)?$/.test(ingest)) throw fail(400, 'The server address must look like rtmp://live.twitch.tv/app');
+      if (!/^rtmps?:\/\/[A-Za-z0-9.-]+(:\d+)?(\/[A-Za-z0-9._\/-]*)?$/.test(ingest)) throw fail(400, `The server address must look like ${DEFAULT_INGEST}`);
       s.ingest = ingest;
     }
     if (body.streamKey) {
@@ -503,9 +527,9 @@ function relay(ws) {
 
     if (broadcasting && broadcasting !== ws) { stop('Already streaming from another window.'); return; }
     const s = readJson('settings.json', {});
-    if (!s.streamKey) { stop('Add your Twitch stream key in Settings first.'); return; }
+    if (!s.streamKey) { stop('Add your Twitch stream key first: layout menu (top left) → Twitch stream key.'); return; }
     key = s.streamKey;
-    const target = `${(s.ingest || DEFAULT_INGEST).replace(/\/+$/, '')}/${s.streamKey}${s.testMode ? '?bandwidthtest=true' : ''}`;
+    const target = `${ingestOf(s).replace(/\/+$/, '')}/${s.streamKey}${s.testMode ? '?bandwidthtest=true' : ''}`;
 
     ffmpeg = spawn(FFMPEG, ffmpegArgs(msg, target), { stdio: ['pipe', 'ignore', 'pipe'] });
     broadcasting = ws;
