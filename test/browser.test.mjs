@@ -253,6 +253,9 @@ test('layouts save across browsers: another one picks up changes, and a stale on
   const camOnA = await page.evaluate(() => window.studio.doc.layouts[0].sources.find((s) => s.type === 'camera'));
   const camOnB = await b.evaluate(() => window.studio.doc.layouts[0].sources.find((s) => s.type === 'camera'));
   assert.equal(camOnB.x, camOnA.x, 'with the same positions');
+  // Device ids differ between browsers: the camera is found again by its name.
+  assert.notEqual(await b.evaluate(() => navigator.mediaDevices.enumerateDevices().then((d) => d.find((x) => x.kind === 'videoinput').deviceId)), camOnA.deviceId);
+  await b.waitForFunction(() => [...window.studio.compositor.feeds.values()].some((f) => f.ready), null, { timeout: 5000 });
 
   // A change here shows up there by itself, within the autosave interval.
   answers.push('Main (desk)');

@@ -21,18 +21,29 @@ turns what the browser sends into the H.264/AAC stream Twitch wants.
 
 - **Sources** — any video device the browser can see (USB webcams, HDMI capture
   cards such as Elgato or AVerMedia), a screen/window share, and the timer. Drag
-  to move, drag corners to resize.
+  to move, drag corners to resize. Devices open at the best they offer up to
+  1080p60; there are no per-device settings. Clicking the timer in the list
+  brings it to the front.
 - **Speedrun timer** — split, undo, skip, pause, reset; deltas against your PB in
   LiveSplit's colours; golds; sum of best. Drawn straight into the stream.
 - **Splits** — import and export LiveSplit `.lss` files (PB, golds, attempt count
   and attempt history survive the round trip), or type segment names in.
 - **Audio mixer** — any audio input (capture-card audio, mic) plus screen audio,
   each with volume, mute and a meter. No processing is applied to anything.
-- **Green screen** — on a camera: pick the key colour from the preview, set
-  similarity and smoothness, upload a photo or video as the background.
-- **Layouts** — as many as you like, saved on the server automatically.
-- **Twitch** — stream key kept on the server (never sent back to the browser),
-  and a bandwidth-test mode to try everything without going public.
+- **Green screen** — on a camera: on/off, the key colour (the browser's colour
+  picker has an eyedropper), and a photo or video as the background. The keying
+  strength is fixed.
+- **Layouts** — as many as you like, in the menu at the top left (new,
+  duplicate, rename, delete). Saved automatically on the server, so the same
+  layouts open in any browser on any device: each change is kept in the browser
+  at once, sent within a second and retried every few seconds until the server
+  has it; open pages pick up changes made elsewhere; a page that fell behind
+  merges instead of overwriting newer work; changes that never reached the
+  server (network or sign-in dropped, page closed) are sent on the next visit.
+- **Twitch** — Twitch's global ingest (`ingest.global-contribute.live-video.net`)
+  unless you pick another server in Settings; the stream key is kept on the
+  server (never sent back to the browser); a bandwidth-test mode to try
+  everything without going public.
 
 That is the whole feature list, on purpose.
 
@@ -98,24 +109,24 @@ Change the password later with
 
 ## First stream
 
-1. **Settings** → paste your stream key (Twitch → Creator Dashboard → Settings →
-   Stream). Tick **Bandwidth test** for a dry run that never goes public.
-2. **+ Video device**, then choose your capture card under **Properties →
-   Device**. Leave capture resolution at 1080p unless your card struggles.
-3. **+ Audio input** for the capture card's audio (it shows up as its own input,
+1. Layout menu (top left) → **Twitch stream key** → paste it (Twitch → Creator
+   Dashboard → Settings → Stream) → **Save**. For a dry run that never goes
+   public, tick **Bandwidth test** in **Settings**.
+2. **+ Video** and pick your capture card from the list.
+3. **+ Input** for the capture card's audio (it shows up as its own input,
    e.g. "Game Capture HD60 S+"), and again for your mic.
-4. **Timer** → **Import .lss**, or **Edit segments** to type them in.
+4. Timer → **Import** an `.lss`, or **Edit** to type segments in.
 5. **Start streaming.** The status shows time live and upload rate.
 
 ### Green screen
 
-Select the camera → tick **Replace the green with a background** → **Pick from
-preview** and click on the green → nudge **Similarity** until the green is gone
-and **Smoothness** until the edges look right → **Upload photo or video**.
+Select the camera → tick **On** → set the colour to your screen's green (open
+the colour box and use its eyedropper on the preview) → **Upload background**.
 
 ### Timer hotkeys
 
-Numpad 1 split, 3 reset, 8 undo, 2 skip, 5 pause — change them in Settings.
+Numpad 1 split, 3 reset, 8 undo, 2 skip, 5 pause — change them with the ⌨
+button under the timer.
 They work while the studio tab has focus, which is fine for console games
 through a capture card. A browser cannot catch keys while another program has
 focus.
@@ -156,8 +167,8 @@ npm test
 | | |
 | --- | --- |
 | `test/timer.test.mjs` | splits, PB, golds, undo/skip/reset, delta colours, time formats |
-| `test/server.test.mjs` | login, lockout, origin checks, storage, the write-only stream key, uploads, path traversal, the relay to ffmpeg |
+| `test/server.test.mjs` | login, lockout, origin checks, storage and layout revisions, the global ingest, the write-only stream key, uploads, path traversal, the relay to ffmpeg |
 | `test/sso.test.mjs` | single sign-on: the user a trusted proxy names is signed in (pages, API, stream socket), others and other addresses are not, log out goes back through the hub, the password login still works |
 | `test/install.test.mjs` | the installer against real Caddy and nginx in scratch folders: another site already on the server is kept, a clash or a broken config is rolled back without a reload, reruns are idempotent, IPv6 only where the kernel has it; `push.sh`'s remote command, quoting included; and `deploy/docker/push.sh` shipping the working tree without touching your git index |
 | `test/twitch.test.mjs` | a real ffmpeg pushes to a local RTMP server standing in for Twitch; checks H.264 + AAC, frame rate, and a keyframe every 2 s (skipped without ffmpeg) |
-| `test/browser.test.mjs` | the studio in Chromium: sign in, add a device, key a green screen onto an uploaded background and check the pixels, drag, layouts, timer hotkeys, `.lss` round trip, mixer meters, going live (skipped without Playwright) |
+| `test/browser.test.mjs` | the studio in Chromium: sign in, add a device, key a green screen onto an uploaded background and check the pixels, drag, the layout menu, layouts shared with a second browser (live updates, a stale save merged), unsaved changes restored, timer hotkeys, `.lss` round trip, mixer meters, the stream key popup and going live (skipped without Playwright) |
