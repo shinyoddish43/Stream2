@@ -124,7 +124,12 @@ CI 63/63.
   wrong: that card appears but reads constant 0x80000000, nothing is wired to
   it; the owner can delete `/etc/modprobe.d/thinkpad-dmic.conf`.
 - A mic that stops by itself (unplugged, sound system restarted) now shows
-  "stopped" and is tried again once after 1.5 s. CI 64/64 expected.
+  "stopped" and is tried again once after 1.5 s.
+- Audio inputs other than the default mic carry `computer` (a random id in
+  that browser's localStorage, `studio.computer`). Another computer leaves
+  them out instead of listing them missing; old inputs are claimed by the
+  first computer that opens them. The Sources box sizes to its list; audio
+  fills the rest. CI 65/65.
 
 ## Not done
 
