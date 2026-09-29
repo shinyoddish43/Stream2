@@ -128,8 +128,8 @@ CI 63/63.
 - Audio inputs other than the default mic carry `computer` (a random id in
   that browser's localStorage, `studio.computer`). Another computer leaves
   them out instead of listing them missing; old inputs are claimed by the
-  first computer that opens them. The Sources box sizes to its list; audio
-  fills the rest. CI 65/65.
+  first computer that opens them. The Sources and Audio boxes size to
+  their contents and grow as things are added. CI 65/65.
 
 ## Not done
 

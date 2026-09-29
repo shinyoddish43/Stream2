@@ -416,10 +416,15 @@ test('the timer runs from its hotkey and splits import and export as .lss', { sk
 });
 
 test('audio inputs appear in the mixer with a live meter', { skip }, async () => {
+  const audioBox = () => page.$eval('.audio-panel', (p) => p.getBoundingClientRect().height);
+  const before = await audioBox();
+  assert.ok(before < 110, `the Audio box fits its one input: ${before}px`);
   await addDevice(page, '#addAudio');
   await page.waitForTimeout(1500);
   const strips = await page.$$eval('#mixer .strip', (s) => s.length);
   assert.ok(strips >= 2, 'no second mixer strip');
+  const after = await audioBox();
+  assert.ok(after > before + 20, `the Audio box grows with its inputs: ${before}px, then ${after}px`);
   assert.ok(await meterMoves(page), 'the meter never moved');
 });
 
