@@ -114,20 +114,63 @@ test('the default layout draws the timer', { skip }, async () => {
   assert.ok(r + g + b > 0 && r + g + b < 120, `timer background ${r},${g},${b}`);
 });
 
-test('the page is the simple one: no properties panel, no layout buttons in the bar', { skip }, async () => {
-  assert.equal(await page.$('#props'), null);
-  assert.equal(await page.$('#layoutSelect'), null);
-  const bar = await page.textContent('header.bar');
-  assert.doesNotMatch(bar, /Stream Studio|Layout|Duplicate|Rename|Delete/);
+test('one column on the right holds everything: no settings, no header, no bottom bar', { skip }, async () => {
+  for (const gone of ['#props', '#layoutSelect', '#settingsButton', '#settingsDialog', 'header', 'footer', '.docks']) {
+    assert.equal(await page.$(gone), null, `${gone} should be gone`);
+  }
   assert.equal(await page.textContent('#layoutName'), 'Main');
   assert.equal(await page.$eval('#greenOn', (i) => i.disabled), true, 'no camera yet, nothing to key');
-  // The preview is 16:9 and fits its panel: never cropped or stretched.
-  const fit = await page.evaluate(() => {
-    const s = document.querySelector('.stage').getBoundingClientRect();
-    const p = document.querySelector('.preview').getBoundingClientRect();
-    return { ratio: s.width / s.height, inside: s.width <= p.width + 1 && s.height <= p.height + 1 };
+  const box = await page.evaluate(() => {
+    const r = (sel) => document.querySelector(sel).getBoundingClientRect();
+    const side = r('.side');
+    const start = r('#streamButton');
+    const menu = r('#layoutButton');
+    const stage = r('.stage');
+    const inSide = ['#timerSplit', '#hotkeysButton', '#sourceList', '#greenOn', '#mixer'].every((sel) => document.querySelector('.side').contains(document.querySelector(sel)));
+    return {
+      w: innerWidth, h: innerHeight, scroll: [document.documentElement.scrollWidth, document.documentElement.scrollHeight],
+      startRight: start.right, startTop: start.top, menuGap: start.left - menu.right, menuTop: menu.top,
+      sideBottom: side.bottom, sideLeft: side.left, stageRight: stage.right, ratio: stage.width / stage.height, inSide,
+    };
   });
-  assert.ok(Math.abs(fit.ratio - 16 / 9) < 0.01 && fit.inside, JSON.stringify(fit));
+  assert.deepEqual(box.scroll, [box.w, box.h], 'the page does not scroll');
+  assert.ok(box.w - box.startRight <= 8 && box.startTop <= 8, `Start streaming is in the top right corner: ${JSON.stringify(box)}`);
+  assert.ok(box.menuGap >= 0 && box.menuGap <= 8 && Math.abs(box.menuTop - box.startTop) < 2, 'the layout menu is just left of it');
+  assert.ok(box.inSide, 'timer, sources, green screen and audio are all in the column');
+  assert.ok(box.h - box.sideBottom <= 8, 'the column runs to the bottom of the window');
+  assert.ok(box.stageRight <= box.sideLeft, 'the preview is left of the column');
+  assert.ok(Math.abs(box.ratio - 16 / 9) < 0.01, 'the preview is 16:9');
+});
+
+// Chromium's fake microphone beeps with silence between; wait for a beep.
+// Each reading covers the analyser's last ~43 ms, so read every 20 ms: at
+// 100 ms a short beep could fall between readings, again and again.
+const meterMoves = (p) => p.evaluate(async () => {
+  await window.studio.mixer.resume();
+  for (let i = 0; i < 300; i++) {
+    if (Object.values(window.studio.mixer.levels()).some((v) => v > 0.001)) return true;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  return false;
+});
+
+test('a new studio starts with this computer\'s default microphone, and its meter moves even when muted', { skip }, async () => {
+  const names = await page.$$eval('#mixer .strip .name', (n) => n.map((x) => x.textContent));
+  assert.match(names[0], /^Default mic · /, names.join());
+  assert.equal(await page.evaluate(() => window.studio.doc.audio[0].deviceId), 'default');
+  await page.click('#mixer .strip button:has-text("Mute")');
+  assert.ok(await page.$('#mixer .strip.is-muted'));
+  assert.ok(await meterMoves(page), 'a muted input still shows its level');
+  await page.click('#mixer .strip button:has-text("Muted")');
+  assert.equal(await page.$('#mixer .strip.is-muted'), null);
+});
+
+test('the mixer says when sound waits for the page to be used, and a key press starts it', { skip }, async () => {
+  await page.evaluate(() => window.studio.mixer.ctx.suspend());
+  await page.waitForSelector('#audioPaused:not([hidden])');
+  await page.keyboard.press('Shift');
+  await until(page, () => window.studio.mixer.ctx.state === 'running');
+  await page.waitForSelector('#audioPaused', { state: 'hidden' });
 });
 
 test('a capture device can be added and shows up on the canvas', { skip }, async () => {
@@ -359,19 +402,41 @@ test('audio inputs appear in the mixer with a live meter', { skip }, async () =>
   await addDevice(page, '#addAudio');
   await page.waitForTimeout(1500);
   const strips = await page.$$eval('#mixer .strip', (s) => s.length);
-  assert.ok(strips >= 1, 'no mixer strip');
-  const moving = await page.evaluate(async () => {
-    await window.studio.mixer.resume();
-    // Chromium's fake microphone beeps with silence between; wait for a beep.
-    // Each reading covers the analyser's last ~43 ms, so read every 20 ms:
-    // at 100 ms a short beep could fall between readings, again and again.
-    for (let i = 0; i < 300; i++) {
-      if (Object.values(window.studio.mixer.levels()).some((v) => v > 0.001)) return true;
-      await new Promise((r) => setTimeout(r, 20));
-    }
-    return false;
+  assert.ok(strips >= 2, 'no second mixer strip');
+  assert.ok(await meterMoves(page), 'the meter never moved');
+});
+
+test('a mic saved on another computer can become this computer\'s default mic', { skip }, async () => {
+  await page.evaluate(() => {
+    const { studio } = window;
+    studio.doc.audio = [{ id: 'elsewhere1', deviceId: 'a-device-this-browser-never-had', label: 'Internal Mic', gain: 1.5, muted: false }];
+    studio.save();
+    return studio.flush();
   });
-  assert.ok(moving, 'the meter never moved');
+  await page.reload();
+  await page.waitForSelector('#mixer .strip.missing');
+  assert.match(await page.textContent('#mixer .strip.missing'), /Internal Mic: not on this device/);
+  await page.click('#mixer .strip.missing button:has-text("Use default mic")');
+  await page.waitForSelector('#mixer .strip:not(.missing)');
+  assert.match(await page.textContent('#mixer .strip .name'), /^Default mic · /);
+  const input = await page.evaluate(() => window.studio.doc.audio[0]);
+  assert.deepEqual([input.id, input.deviceId, input.gain], ['elsewhere1', 'default', 1.5], 'the same input, its volume kept');
+});
+
+test('a blocked microphone says so, instead of "not found"', { skip }, async () => {
+  await page.evaluate(() => window.studio.flush());
+  const other = await browser.newContext();
+  await other.addInitScript(() => {
+    navigator.mediaDevices.getUserMedia = async () => { throw new DOMException('Permission denied', 'NotAllowedError'); };
+  });
+  const b = await other.newPage();
+  await b.request.post(`${server.url}/api/login`, { data: { user: USER, password: PASSWORD }, headers: { Origin: server.url } });
+  await b.goto(`${server.url}/`);
+  await b.waitForSelector('#mixer .strip.missing');
+  const text = await b.textContent('#mixer .strip.missing');
+  assert.match(text, /^Default microphone: blocked\. Allow the microphone for this site/);
+  assert.doesNotMatch(text, /Use default mic/, 'the default mic would be blocked too');
+  await other.close();
 });
 
 test('going live asks for the stream key, then sends the stream to Twitch\'s global ingest', { skip }, async () => {

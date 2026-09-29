@@ -29,21 +29,26 @@ turns what the browser sends into the H.264/AAC stream Twitch wants.
 - **Splits** — import and export LiveSplit `.lss` files (PB, golds, attempt count
   and attempt history survive the round trip), or type segment names in.
 - **Audio mixer** — any audio input (capture-card audio, mic) plus screen audio,
-  each with volume, mute and a meter. No processing is applied to anything.
+  each with volume (up to 4×), mute and a meter (in dB; it keeps moving while
+  muted, so you can see an input is alive). No processing is applied to
+  anything. A new studio starts with the **default microphone**, which means
+  the default mic of whichever computer the studio is open on; a mic saved on
+  another computer offers **Use default mic**. When an input cannot be opened
+  the mixer says why (not on this device, blocked for this site, in use).
 - **Green screen** — on a camera: on/off, the key colour (the browser's colour
   picker has an eyedropper), and a photo or video as the background. The keying
   strength is fixed.
-- **Layouts** — as many as you like, in the menu at the top left (new,
-  duplicate, rename, delete). Saved automatically on the server, so the same
+- **Layouts** — as many as you like, in the menu at the top right, left of
+  **Start streaming** (new, duplicate, rename, delete; also the stream key and
+  log out). Saved automatically on the server, so the same
   layouts open in any browser on any device: each change is kept in the browser
   at once, sent within a second and retried every few seconds until the server
   has it; open pages pick up changes made elsewhere; a page that fell behind
   merges instead of overwriting newer work; changes that never reached the
   server (network or sign-in dropped, page closed) are sent on the next visit.
-- **Twitch** — Twitch's global ingest (`ingest.global-contribute.live-video.net`)
-  unless you pick another server in Settings; the stream key is kept on the
-  server (never sent back to the browser); a bandwidth-test mode to try
-  everything without going public.
+- **Twitch** — 1280×720 at 30 fps and 4500 kbps to Twitch's global ingest
+  (`ingest.global-contribute.live-video.net`); there are no settings. The
+  stream key is kept on the server (never sent back to the browser).
 
 That is the whole feature list, on purpose.
 
@@ -109,12 +114,11 @@ Change the password later with
 
 ## First stream
 
-1. Layout menu (top left) → **Twitch stream key** → paste it (Twitch → Creator
-   Dashboard → Settings → Stream) → **Save**. For a dry run that never goes
-   public, tick **Bandwidth test** in **Settings**.
+1. Layout menu (top right) → **Twitch stream key** → paste it (Twitch → Creator
+   Dashboard → Settings → Stream) → **Save**.
 2. **+ Video** and pick your capture card from the list.
 3. **+ Input** for the capture card's audio (it shows up as its own input,
-   e.g. "Game Capture HD60 S+"), and again for your mic.
+   e.g. "Game Capture HD60 S+"). The default mic is already there.
 4. Timer → **Import** an `.lss`, or **Edit** to type segments in.
 5. **Start streaming.** The status shows time live and upload rate.
 
@@ -171,4 +175,4 @@ npm test
 | `test/sso.test.mjs` | single sign-on: the user a trusted proxy names is signed in (pages, API, stream socket), others and other addresses are not, log out goes back through the hub, the password login still works |
 | `test/install.test.mjs` | the installer against real Caddy and nginx in scratch folders: another site already on the server is kept, a clash or a broken config is rolled back without a reload, reruns are idempotent, IPv6 only where the kernel has it; `push.sh`'s remote command, quoting included; and `deploy/docker/push.sh` shipping the working tree without touching your git index |
 | `test/twitch.test.mjs` | a real ffmpeg pushes to a local RTMP server standing in for Twitch; checks H.264 + AAC, frame rate, and a keyframe every 2 s (skipped without ffmpeg) |
-| `test/browser.test.mjs` | the studio in Chromium: sign in, add a device, key a green screen onto an uploaded background and check the pixels, drag, the layout menu, layouts shared with a second browser (live updates, a stale save merged), unsaved changes restored, timer hotkeys, `.lss` round trip, mixer meters, the stream key popup and going live (skipped without Playwright) |
+| `test/browser.test.mjs` | the studio in Chromium: the one-column layout, the default mic (meter while muted, a mic from another computer, a blocked mic), sign in, add a device, key a green screen onto an uploaded background and check the pixels, drag, the layout menu, layouts shared with a second browser (live updates, a stale save merged), unsaved changes restored, timer hotkeys, `.lss` round trip, mixer meters, the stream key popup and going live (skipped without Playwright) |

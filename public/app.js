@@ -13,6 +13,7 @@ const OUTPUT = { width: 1280, height: 720, fps: 30, bitrate: 4500 };
 // An audio input saved as DEFAULT_MIC is the default microphone of whichever
 // browser and device the studio runs on, so it works everywhere.
 const DEFAULT_MIC = 'default';
+const NOT_HERE = 'not on this device';
 // Changes not yet on the server, kept in this browser until they are.
 const STASH = 'studio.unsaved';
 const clientId = uid();
@@ -320,7 +321,7 @@ function audioProblem(error) {
   const name = error && error.name;
   if (name === 'NotAllowedError' || name === 'SecurityError') return 'blocked. Allow the microphone for this site (icon in the address bar)';
   if (name === 'NotReadableError' || name === 'AbortError') return 'could not be opened. Another app may be using it, or the system cannot';
-  if (name === 'NotFoundError' || name === 'OverconstrainedError') return 'not on this device';
+  if (name === 'NotFoundError' || name === 'OverconstrainedError') return NOT_HERE;
   return (error && error.message) || 'could not be opened';
 }
 
@@ -598,7 +599,7 @@ function renderMixer() {
       meter.className = 'meter';
       meter.title = 'Level (it moves even while muted)';
       meter.append(Object.assign(document.createElement('i'), { id: `meter-${strip.id}` }));
-      div.append(name(strip.label), gain, mute, drop, meter);
+      div.append(name(strip.label), mute, drop, gain, meter);
       return div;
     }),
     ...missing.map((a) => {
@@ -606,7 +607,7 @@ function renderMixer() {
       div.className = 'strip missing';
       div.append(name(`${a.label}: ${missingAudio.get(a.id)}`));
       // A mic saved on another computer: this computer's default one instead.
-      if (a.deviceId !== DEFAULT_MIC && !hasDefault) {
+      if (missingAudio.get(a.id) === NOT_HERE && a.deviceId !== DEFAULT_MIC && !hasDefault) {
         div.append(btn('Use default mic', () => {
           Object.assign(a, { deviceId: DEFAULT_MIC, label: 'Default microphone' });
           missingAudio.delete(a.id);
@@ -939,5 +940,5 @@ boot().catch((e) => showStatus({ state: 'error', message: e.message }));
 // For the console, and for tests.
 window.studio = {
   get doc() { return doc; }, get rev() { return rev; }, get dirty() { return dirty; },
-  timer, mixer, compositor, streamer, flush, pull,
+  timer, mixer, compositor, streamer, flush, pull, save,
 };
