@@ -72,6 +72,16 @@ const layoutNames = async (p) => {
   await p.keyboard.press('Escape');
   return names;
 };
+// Wait until fn(arg) is true in the page. Not page.waitForFunction: some
+// Playwright versions run that through eval, which the studio's CSP refuses.
+async function until(p, fn, arg, timeout = 10000) {
+  const end = Date.now() + timeout;
+  while (!(await p.evaluate(fn, arg))) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${fn}`);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
 // A device button either adds the only device or offers a menu of them.
 async function addDevice(p, button) {
   await p.click(button);
@@ -255,12 +265,12 @@ test('layouts save across browsers: another one picks up changes, and a stale on
   assert.equal(camOnB.x, camOnA.x, 'with the same positions');
   // Device ids differ between browsers: the camera is found again by its name.
   assert.notEqual(await b.evaluate(() => navigator.mediaDevices.enumerateDevices().then((d) => d.find((x) => x.kind === 'videoinput').deviceId)), camOnA.deviceId);
-  await b.waitForFunction(() => [...window.studio.compositor.feeds.values()].some((f) => f.ready), null, { timeout: 5000 });
+  await until(b, () => [...window.studio.compositor.feeds.values()].some((f) => f.ready));
 
   // A change here shows up there by itself, within the autosave interval.
   answers.push('Main (desk)');
   await layoutMenu(page, 'rename');
-  await b.waitForFunction(() => window.studio.doc.layouts[0].name === 'Main (desk)', null, { timeout: 12000 });
+  await until(b, () => window.studio.doc.layouts[0].name === 'Main (desk)', null, 12000);
   assert.equal(await b.textContent('#layoutName'), 'Main (desk)');
 
   // Now B stops listening (hidden), A adds a layout, and B, still on the old
@@ -277,6 +287,7 @@ test('layouts save across browsers: another one picks up changes, and a stale on
   assert.equal(await page.evaluate(() => window.studio.doc.layouts[0].name), 'Main (laptop)');
   assert.equal(await page.textContent('#layoutName'), 'Layout 3', 'this window stays on its own layout');
   await other.close();
+  answers.length = 0;
   await layoutMenu(page, 'delete');
   await layoutMenu(page, 0);
   await page.evaluate(() => window.studio.flush());
@@ -284,11 +295,14 @@ test('layouts save across browsers: another one picks up changes, and a stale on
 
 test('changes that could not be saved are kept in the browser and saved on the next visit', { skip }, async () => {
   await page.route('**/api/layouts', (route) => (route.request().method() === 'PUT' ? route.abort() : route.continue()));
-  answers.push('Main');
-  await layoutMenu(page, 'rename');
-  await page.waitForFunction(() => document.getElementById('saveState').dataset.state === 'error');
-  assert.match(await page.textContent('#saveState'), /Not saved/);
-  await page.unroute('**/api/layouts');
+  try {
+    answers.push('Main');
+    await layoutMenu(page, 'rename');
+    await until(page, () => document.getElementById('saveState').dataset.state === 'error');
+    assert.match(await page.textContent('#saveState'), /Not saved/);
+  } finally {
+    await page.unroute('**/api/layouts');
+  }
   errors.length = 0;                                    // the aborted saves above, on purpose
   await page.reload();
   await page.waitForTimeout(1500);
@@ -319,7 +333,7 @@ test('the timer runs from its hotkey and splits import and export as .lss', { sk
   await page.click('#hotkey-split');
   await page.keyboard.press('KeyS');
   await page.click('#hotkeysDialog button.primary');
-  await page.waitForFunction(() => window.studio.doc.hotkeys.split === 'KeyS');
+  await until(page, () => window.studio.doc.hotkeys.split === 'KeyS');
   await page.click('.timer-clock');
   await page.keyboard.press('KeyS');
   await page.waitForTimeout(1200);
@@ -367,8 +381,7 @@ test('going live asks for the stream key, then sends the stream to Twitch\'s glo
     'the key popup has one field and one button');
   await page.fill('#streamKey', 'live_123456_abcdefghij');
   await page.keyboard.press('Enter');
-  await page.waitForTimeout(300);
-  assert.equal(await page.evaluate(() => document.getElementById('keyDialog').open), false);
+  await until(page, () => !document.getElementById('keyDialog').open);
   await page.click('#layoutButton');
   assert.equal(await page.textContent('.menu [data-action=key]'), 'Twitch stream key ✓');
   await page.keyboard.press('Escape');
