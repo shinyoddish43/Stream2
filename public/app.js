@@ -7,6 +7,12 @@ const $ = (id) => document.getElementById(id);
 const uid = () => Math.random().toString(36).slice(2, 10);
 const HOTKEYS = { split: 'Split / start', undo: 'Undo', skip: 'Skip', pause: 'Pause', reset: 'Reset' };
 const CHROMA_DEFAULTS = { enabled: false, color: '#00ff00', background: null, backgroundType: null };
+// What goes to Twitch, fixed: 720p30 at 4500 kbps suits a browser encoder and
+// the server's re-encode, and needs about 6 Mbps of upload.
+const OUTPUT = { width: 1280, height: 720, fps: 30, bitrate: 4500 };
+// An audio input saved as DEFAULT_MIC is the default microphone of whichever
+// browser and device the studio runs on, so it works everywhere.
+const DEFAULT_MIC = 'default';
 // Changes not yet on the server, kept in this browser until they are.
 const STASH = 'studio.unsaved';
 const clientId = uid();
@@ -18,7 +24,7 @@ let dirty = false;        // changes the server does not have yet
 let edits = 0;            // counts changes, to tell whether one came in during a save
 let saving = null;        // the save in flight
 const deletedLayouts = new Set();
-const missingAudio = new Set();
+const missingAudio = new Map();   // audio input id -> why it could not be opened here
 const timer = new Timer();
 const mixer = new Mixer();
 const compositor = new Compositor($('program'), $('overlay'), {
@@ -36,9 +42,10 @@ function defaultDoc() {
   const id = uid();
   return {
     version: 2,
-    output: { width: 1280, height: 720, fps: 30, bitrate: 4500 },
+    output: { ...OUTPUT },
     hotkeys: { split: 'Numpad1', undo: 'Numpad8', skip: 'Numpad2', pause: 'Numpad5', reset: 'Numpad3' },
-    audio: [],
+    // Like OBS's Mic/Aux, a new studio starts with the default microphone.
+    audio: [{ id: uid(), deviceId: DEFAULT_MIC, label: 'Default microphone', gain: 1, muted: false }],
     screenAudio: { gain: 1, muted: false },
     active: id,
     layouts: [{ id, name: 'Main', sources: [timerSource(1280, 720)] }],
@@ -54,9 +61,12 @@ function migrate(saved) {
   const base = defaultDoc();
   if (!saved || !Array.isArray(saved.layouts) || !saved.layouts.length) return base;
   const { rev: _rev, savedAt: _at, savedBy: _by, ...rest } = saved;
-  const d = { ...base, ...structuredClone(rest), output: { ...base.output, ...rest.output }, hotkeys: { ...base.hotkeys, ...rest.hotkeys } };
+  const d = { ...base, ...structuredClone(rest), output: { ...OUTPUT }, hotkeys: { ...base.hotkeys, ...rest.hotkeys } };
   if (!d.layouts.some((l) => l.id === d.active)) d.active = d.layouts[0].id;
+  // Layouts made at another size (there used to be a setting) keep their proportions.
+  const k = OUTPUT.width / (Number(rest.output && rest.output.width) || OUTPUT.width);
   for (const l of d.layouts) {
+    if (k !== 1) for (const s of l.sources) for (const p of ['x', 'y', 'w', 'h']) s[p] = Math.round(s[p] * k);
     for (const s of l.sources) {
       if (s.type !== 'camera') continue;
       // Cameras open at fixed defaults, and keying strength is fixed: only
@@ -166,12 +176,9 @@ async function pull() {
 
 function adopt(saved, savedRev) {
   const shown = doc.active;
-  const output = doc.output;
   doc = migrate(saved);
   rev = savedRev;
   if (doc.layouts.some((l) => l.id === shown)) doc.active = shown;       // this window keeps its layout
-  if (streamer.live) doc.output = output;                                 // and a live stream its size
-  if (doc.output.width !== output.width || doc.output.height !== output.height) compositor.resize(doc.output.width, doc.output.height);
   if (!active().sources.some((s) => s.id === compositor.selected)) compositor.selected = null;
   compositor.prune(allSources());
   if (!allSources().some((s) => s.type === 'screen')) mixer.remove('screen');
@@ -179,7 +186,7 @@ function adopt(saved, savedRev) {
   for (const id of [...mixer.strips.keys()]) if (id !== 'screen' && !doc.audio.some((a) => a.id === id)) mixer.remove(id);
   for (const a of doc.audio) mixer.set(a.id, a);
   mixer.set('screen', doc.screenAudio);
-  for (const id of missingAudio) if (!doc.audio.some((a) => a.id === id)) missingAudio.delete(id);
+  for (const id of missingAudio.keys()) if (!doc.audio.some((a) => a.id === id)) missingAudio.delete(id);
   openSavedAudio();
   renderAll();
 }
@@ -289,13 +296,32 @@ async function openSavedAudio(retry = false) {
   for (const input of doc.audio) {
     if (mixer.strips.has(input.id) || (!retry && missingAudio.has(input.id))) continue;
     try {
-      mixer.add(input.id, await openAudioInput(input.deviceId, input.label), input);
+      const stream = await openAudioInput(input.deviceId, input.label);
+      if (!doc.audio.some((a) => a.id === input.id)) { stream.getTracks().forEach((t) => t.stop()); continue; }
+      mixer.add(input.id, stream, { ...input, label: inputName(input, stream) });
       missingAudio.delete(input.id);
-    } catch {
-      missingAudio.add(input.id);
+    } catch (e) {
+      missingAudio.set(input.id, audioProblem(e));
     }
   }
   renderMixer();
+}
+
+// The default microphone shows which device it is on this computer.
+function inputName(input, stream) {
+  if (input.deviceId !== DEFAULT_MIC) return input.label;
+  const track = stream.getAudioTracks()[0];
+  const device = track ? track.label.replace(/^Default( - )?/i, '').trim() : '';
+  return device ? `Default mic · ${device}` : 'Default mic';
+}
+
+// Why an input could not be opened, in words that say what to do.
+function audioProblem(error) {
+  const name = error && error.name;
+  if (name === 'NotAllowedError' || name === 'SecurityError') return 'blocked. Allow the microphone for this site (icon in the address bar)';
+  if (name === 'NotReadableError' || name === 'AbortError') return 'could not be opened. Another app may be using it, or the system cannot';
+  if (name === 'NotFoundError' || name === 'OverconstrainedError') return 'not on this device';
+  return (error && error.message) || 'could not be opened';
 }
 
 // ---------------------------------------------------------------- layouts
@@ -322,6 +348,8 @@ $('layoutButton').addEventListener('click', () => showMenu($('layoutButton'), [
   { label: 'Delete', action: 'delete', danger: true, run: deleteLayout },
   '-',
   { label: settings.hasKey ? 'Twitch stream key ✓' : 'Twitch stream key…', action: 'key', run: openKeyDialog },
+  '-',
+  { label: 'Log out', action: 'logout', run: () => $('logoutForm').submit() },
 ]));
 
 function newLayout() {
@@ -547,16 +575,19 @@ function renderMixer() {
   const host = $('mixer');
   const strips = [...mixer.strips.values()];
   const missing = doc.audio.filter((a) => missingAudio.has(a.id) && !mixer.strips.has(a.id));
+  $('audioPaused').hidden = !strips.length || mixer.ctx.state === 'running';
   if (!strips.length && !missing.length) {
     host.innerHTML = '<p class="hint">No audio yet: add a mic or capture card, or share a screen with sound.</p>';
     return;
   }
   const name = (text) => Object.assign(document.createElement('span'), { className: 'name', textContent: text, title: text });
+  const hasDefault = doc.audio.some((a) => a.deviceId === DEFAULT_MIC);
   host.replaceChildren(
     ...strips.map((strip) => {
       const div = document.createElement('div');
-      div.className = 'strip';
-      const gain = Object.assign(document.createElement('input'), { type: 'range', min: 0, max: 2, step: 0.01, value: strip.gain, title: 'Volume' });
+      div.className = strip.muted ? 'strip is-muted' : 'strip';
+      // Up to four times louder: a laptop's built-in mic is quiet without processing.
+      const gain = Object.assign(document.createElement('input'), { type: 'range', min: 0, max: 4, step: 0.01, value: strip.gain, title: 'Volume' });
       gain.setAttribute('aria-label', `${strip.label} volume`);
       gain.addEventListener('input', () => { mixer.set(strip.id, { gain: Number(gain.value) }); remember(strip); });
       const mute = btn(strip.muted ? 'Muted' : 'Mute', () => { mixer.set(strip.id, { muted: !strip.muted }); remember(strip); renderMixer(); }, strip.muted ? 'muted' : '');
@@ -565,6 +596,7 @@ function renderMixer() {
       drop.title = 'Remove';
       const meter = document.createElement('div');
       meter.className = 'meter';
+      meter.title = 'Level (it moves even while muted)';
       meter.append(Object.assign(document.createElement('i'), { id: `meter-${strip.id}` }));
       div.append(name(strip.label), gain, mute, drop, meter);
       return div;
@@ -572,7 +604,17 @@ function renderMixer() {
     ...missing.map((a) => {
       const div = document.createElement('div');
       div.className = 'strip missing';
-      div.append(name(`${a.label}: not found`), btn('Retry', () => openSavedAudio(true)),
+      div.append(name(`${a.label}: ${missingAudio.get(a.id)}`));
+      // A mic saved on another computer: this computer's default one instead.
+      if (a.deviceId !== DEFAULT_MIC && !hasDefault) {
+        div.append(btn('Use default mic', () => {
+          Object.assign(a, { deviceId: DEFAULT_MIC, label: 'Default microphone' });
+          missingAudio.delete(a.id);
+          save();
+          openSavedAudio(true);
+        }));
+      }
+      div.append(btn('Retry', () => openSavedAudio(true)),
         btn('Forget', () => { doc.audio = doc.audio.filter((x) => x !== a); missingAudio.delete(a.id); save(); renderMixer(); }));
       return div;
     }),
@@ -592,23 +634,31 @@ $('addAudio').addEventListener('click', async (e) => {
   const anchor = e.currentTarget;
   await mixer.resume();
   let inputs;
-  try { inputs = await devices('audioinput'); } catch (err) { alert(`Microphone permission is needed: ${err.message}`); return; }
+  try {
+    inputs = await devices('audioinput');
+  } catch (err) {
+    alert(`The microphone ${audioProblem(err)}.`);
+    return;
+  }
   const used = new Set(doc.audio.map((a) => a.deviceId));
-  const choices = inputs.filter((d) => !used.has(d.deviceId));
+  const choices = [];
+  if (!used.has(DEFAULT_MIC)) choices.push({ deviceId: DEFAULT_MIC, label: 'Default microphone' });
+  // Chrome also lists the default and communications devices under those ids.
+  for (const d of inputs) if (d.deviceId && !['default', 'communications'].includes(d.deviceId) && !used.has(d.deviceId)) choices.push(d);
   if (!choices.length) { alert('Every audio input is already in the mixer.'); return; }
-  if (choices.length === 1) addAudioInput(choices[0]);
-  else showMenu(anchor, choices.map((d) => ({ label: d.label || 'Audio input', run: () => addAudioInput(d) })));
+  showMenu(anchor, choices.map((d) => ({ label: d.deviceId === DEFAULT_MIC ? 'Default microphone (this computer’s)' : d.label || 'Audio input', run: () => addAudioInput(d) })));
 });
 
 async function addAudioInput(device) {
+  const entry = { id: uid(), deviceId: device.deviceId, label: device.label || 'Audio input', gain: 1, muted: false };
   try {
-    const entry = { id: uid(), deviceId: device.deviceId, label: device.label || 'Audio input', gain: 1, muted: false };
-    mixer.add(entry.id, await openAudioInput(device.deviceId), entry);
+    const stream = await openAudioInput(entry.deviceId, entry.label);
+    mixer.add(entry.id, stream, { ...entry, label: inputName(entry, stream) });
     doc.audio.push(entry);
     save();
     renderMixer();
   } catch (e) {
-    alert(`Could not open that input: ${e.message}`);
+    alert(`${entry.label} ${audioProblem(e)}.`);
   }
 }
 
@@ -746,43 +796,6 @@ $('keyForm').addEventListener('submit', async (e) => {
 });
 $('streamKey').addEventListener('input', (e) => e.target.setCustomValidity(''));
 
-// --------------------------------------------------------------- settings
-
-$('settingsButton').addEventListener('click', () => {
-  $('setIngest').value = settings.ingest;
-  $('setTest').checked = settings.testMode;
-  $('setResolution').value = `${doc.output.width}x${doc.output.height}`;
-  $('setFps').value = String(doc.output.fps);
-  $('setBitrate').value = doc.output.bitrate;
-  $('settingsError').textContent = '';
-  $('settingsDialog').showModal();
-});
-
-$('settingsSave').addEventListener('click', async (e) => {
-  e.preventDefault();
-  const [width, height] = $('setResolution').value.split('x').map(Number);
-  if (streamer.live && (width !== doc.output.width || height !== doc.output.height)) {
-    $('settingsError').textContent = 'Stop streaming before changing the resolution.';
-    return;
-  }
-  try {
-    const body = { ingest: $('setIngest').value.trim() || $('setIngest').placeholder, testMode: $('setTest').checked };
-    settings = (await api('/api/settings', { method: 'PUT', body: JSON.stringify(body) })).settings;
-  } catch (err) {
-    $('settingsError').textContent = err.message;
-    return;
-  }
-  if (width !== doc.output.width) {
-    // Keep the layout proportional when the canvas size changes.
-    const k = width / doc.output.width;
-    for (const s of allSources()) for (const p of ['x', 'y', 'w', 'h']) s[p] = Math.round(s[p] * k);
-  }
-  doc.output = { width, height, fps: Number($('setFps').value), bitrate: Math.min(8000, Math.max(500, Number($('setBitrate').value) || 4500)) };
-  compositor.resize(width, height);
-  save();
-  $('settingsDialog').close();
-});
-
 // ------------------------------------------------------------------ live
 
 $('streamButton').addEventListener('click', async () => {
@@ -880,7 +893,10 @@ function tick() {
   const levels = mixer.levels();
   for (const [id, peak] of Object.entries(levels)) {
     const bar = document.getElementById(`meter-${id}`);
-    if (bar) bar.style.width = `${Math.min(100, peak * 100)}%`;
+    if (!bar) continue;
+    // -60 dBFS to 0 dBFS across the bar, so a quiet mic still shows.
+    bar.style.width = `${peak > 0.001 ? Math.min(100, ((20 * Math.log10(peak) + 60) / 60) * 100) : 0}%`;
+    bar.classList.toggle('clip', peak >= 0.99);
   }
 }
 
@@ -912,7 +928,9 @@ async function boot() {
   setInterval(tick, 100);
   // Autosave: retry anything unsaved, and pick up other devices' changes.
   setInterval(() => { if (dirty) flush(); else pull(); }, 5000);
-  document.addEventListener('click', () => mixer.resume(), { once: true });
+  // Browsers keep sound off until the page is used: any click or key starts it.
+  for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, () => mixer.resume(), true);
+  mixer.ctx.addEventListener('statechange', renderMixer);
   hubLink(settings.hubOrigin);
 }
 

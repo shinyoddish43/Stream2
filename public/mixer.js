@@ -25,13 +25,17 @@ export class Mixer {
     const track = stream.getAudioTracks()[0];
     if (!track) return null;
     const source = this.ctx.createMediaStreamSource(new MediaStream([track]));
-    const gainNode = this.ctx.createGain();
+    const gainNode = this.ctx.createGain();   // the volume slider
+    const muteNode = this.ctx.createGain();   // the mute button
     const analyser = this.ctx.createAnalyser();
     analyser.fftSize = 2048;
+    // The meter reads after the volume but before the mute, so a muted input
+    // still shows that it is alive.
     source.connect(gainNode);
     gainNode.connect(analyser);
-    gainNode.connect(this.out);
-    const strip = { id, label, gain, muted, source, gainNode, analyser, track, owned, peak: 0 };
+    gainNode.connect(muteNode);
+    muteNode.connect(this.out);
+    const strip = { id, label, gain, muted, source, gainNode, muteNode, analyser, track, owned, peak: 0 };
     this.strips.set(id, strip);
     this.apply(strip);
     return strip;
@@ -42,6 +46,7 @@ export class Mixer {
     if (!strip) return;
     strip.source.disconnect();
     strip.gainNode.disconnect();
+    strip.muteNode.disconnect();
     if (strip.owned) strip.track.stop();
     this.strips.delete(id);
   }
@@ -55,7 +60,8 @@ export class Mixer {
   }
 
   apply(strip) {
-    strip.gainNode.gain.setTargetAtTime(strip.muted ? 0 : strip.gain, this.ctx.currentTime, 0.01);
+    strip.gainNode.gain.setTargetAtTime(strip.gain, this.ctx.currentTime, 0.01);
+    strip.muteNode.gain.setTargetAtTime(strip.muted ? 0 : 1, this.ctx.currentTime, 0.01);
   }
 
   /** Peak level per strip, 0..1, decaying so the meters are readable. */
@@ -73,9 +79,11 @@ export class Mixer {
 }
 
 /** Open an audio input with nothing applied: capture-card audio and a stream
- *  mic both want the raw signal, not a video-call filter. Device ids differ
- *  between browsers and devices, so one saved elsewhere is found by its name;
- *  never by guessing, which could put the wrong microphone on stream. */
+ *  mic both want the raw signal, not a video-call filter. "default" is the
+ *  default microphone of this browser and device, whichever that is. Other
+ *  device ids differ between browsers and devices, so one saved elsewhere is
+ *  found by its name; never by guessing, which could put the wrong microphone
+ *  on stream. */
 export async function openAudioInput(deviceId, label) {
   const open = (id) => navigator.mediaDevices.getUserMedia({
     audio: {
@@ -83,6 +91,7 @@ export async function openAudioInput(deviceId, label) {
       echoCancellation: false, noiseSuppression: false, autoGainControl: false,
     },
   });
+  if (!deviceId || deviceId === 'default') return open(undefined);
   try {
     return await open(deviceId);
   } catch (e) {

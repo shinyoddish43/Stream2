@@ -42,34 +42,50 @@ h3 { margin: 14px 0 6px; font-size: 12px; color: var(--dim); font-weight: 600; }
 .dim { color: var(--dim); }
 .row.tight { gap: 4px; margin: 4px 0; }
 
-/* ---- studio layout ---- */
-body.studio { display: grid; grid-template-rows: auto 1fr 150px; height: 100vh; overflow: hidden; }
-.bar { display: flex; gap: 6px; align-items: center; padding: 5px 8px; background: var(--panel); border-bottom: 1px solid var(--line); }
-.bar form { margin: 0; }
-.menu-button { font-weight: 600; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.savestate { font-size: 11px; color: var(--dim); }
-.savestate[data-state="pending"] { color: #e8c547; }
-.savestate[data-state="error"] { color: var(--live); }
-.status { padding: 3px 9px; border-radius: 999px; background: var(--raised); color: var(--dim); font-size: 12px; font-weight: 600; }
+/* ---- studio layout ----
+   The preview fills the window's height at 16:9 on the left. Everything else
+   lives in the column on the right, which takes whatever width is left (at
+   least --side) and is filled top to bottom: no header, no bottom bar. */
+body.studio {
+  --side: 300px;
+  --gap: 6px;
+  display: grid;
+  height: 100vh;
+  overflow: hidden;
+  padding: var(--gap);
+  gap: var(--gap);
+  grid-template-columns: min(calc((100vh - 2 * var(--gap)) * 16 / 9), calc(100vw - var(--side) - 3 * var(--gap))) minmax(var(--side), 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas: "preview top" "preview side";
+}
+.topbar { grid-area: top; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.actions { display: flex; gap: 6px; }
+.menu-button { flex: 1; min-width: 0; font-weight: 600; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.statusline { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.status { padding: 2px 9px; border-radius: 999px; background: var(--raised); color: var(--dim); font-size: 12px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status[data-state="live"] { background: var(--live); color: #fff; }
 .status[data-state="connecting"] { background: #8a6d1d; color: #fff; }
 .status[data-state="error"] { background: #4a2527; color: #ffb3ae; }
-.main { display: grid; grid-template-columns: 1fr 190px; gap: 6px; padding: 6px; min-height: 0; }
-.preview { min-height: 0; display: grid; place-items: center; background: #0c0d10; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; container-type: size; }
+.savestate { font-size: 11px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.savestate[data-state="pending"] { color: #e8c547; }
+.savestate[data-state="error"] { color: var(--live); }
+.preview { grid-area: preview; min-height: 0; display: grid; place-items: center; background: #0c0d10; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; container-type: size; }
 /* As big as fits, always 16:9: neither cropped nor stretched. */
 .stage { position: relative; width: min(100cqw, 100cqh * 16 / 9); aspect-ratio: 16 / 9; }
 .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 #program { background: #000; }
 #overlay { cursor: default; touch-action: none; }
 
-/* The docks: small panels under the preview. */
-.docks { display: grid; grid-template-columns: 1.2fr 1fr 1.2fr; gap: 6px; padding: 0 6px 6px; min-height: 0; font-size: 12px; }
-.docks .panel { padding: 6px 8px; }
-.docks button, .timer-panel button { padding: 2px 7px; font-size: 12px; }
+/* The column: timer, then sources, green screen and audio. Sources and audio
+   share out the height that is left, so the column has no empty tail. */
+.side { grid-area: side; display: flex; flex-direction: column; gap: var(--gap); min-height: 0; overflow-y: auto; font-size: 12px; }
+.side .panel { flex: none; padding: 6px 8px; }
+.side .panel.grows { flex: 1 1 auto; min-height: 84px; }
+.side button { padding: 2px 7px; font-size: 12px; }
+.side input[type="color"] { width: 34px; height: 24px; flex: none; }
 .dock-head { display: flex; gap: 4px; align-items: center; margin-bottom: 4px; }
 .dock-head h2 { margin: 0 auto 0 0; }
 .dock-head .dim { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
-.docks input[type="color"] { width: 34px; height: 24px; flex: none; }
 
 .list { list-style: none; margin: 0; padding: 0; }
 .list li { display: flex; gap: 3px; align-items: center; padding: 1px 4px; border-radius: 4px; cursor: pointer; min-height: 24px; }
@@ -78,22 +94,22 @@ body.studio { display: grid; grid-template-rows: auto 1fr 150px; height: 100vh; 
 .list li .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .list li button { padding: 0 5px; font-size: 11px; line-height: 18px; }
 .list li.hidden-source .name { opacity: .45; }
-.list li .problem { color: #ffb3ae; font-size: 11px; }
 
-.timer-panel { padding: 8px; }
 .timer-panel .row button { flex: 1; padding-left: 0; padding-right: 0; }
-.timer-title { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.timer-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .timer-title span { color: var(--dim); }
-.timer-clock { font: 700 26px/1.1 ui-monospace, Consolas, monospace; text-align: right; margin: 4px 0 6px; }
+.timer-clock { font: 700 28px/1.1 ui-monospace, Consolas, monospace; text-align: right; margin: 2px 0 6px; }
 button.wide { width: 100%; }
 
-.strip { display: grid; grid-template-columns: minmax(40px, 1fr) 70px auto auto; gap: 4px; align-items: center; margin-bottom: 4px; }
+.strip { display: grid; grid-template-columns: minmax(50px, 1fr) minmax(64px, 120px) auto auto; gap: 4px; align-items: center; margin-bottom: 5px; }
 .strip .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .strip .meter { grid-column: 1 / -1; margin: 0; }
-.strip.missing { grid-template-columns: 1fr auto auto; }
-.strip.missing .name { color: #ffb3ae; }
-.meter { height: 3px; background: #0c0d10; border-radius: 2px; overflow: hidden; }
+.strip.missing { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+.strip.missing .name { color: #ffb3ae; white-space: normal; }
+.meter { height: 4px; background: #0c0d10; border-radius: 2px; overflow: hidden; }
 .meter i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--ok) 70%, #e8c547 85%, var(--live)); }
+.meter i.clip { background: var(--live); }
+.strip.is-muted .meter i { filter: grayscale(1); opacity: .45; }
 .strip button.muted { background: #4a2527; }
 
 /* Drop-down menus: the layout menu, device pickers. */
@@ -117,12 +133,12 @@ body.login { display: grid; place-items: center; padding: 16px; }
 .login-card { width: min(340px, 100%); padding: 20px; }
 .login-card button { width: 100%; margin-top: 8px; }
 
-@media (max-width: 1000px) {
-  body.studio { grid-template-rows: auto auto auto; height: auto; overflow: auto; }
-  .main { grid-template-columns: 1fr; }
-  .preview { height: 56vw; }
-  .docks { grid-template-columns: 1fr; }
-  .bar { flex-wrap: wrap; }
+/* Narrow windows and phones: one column that scrolls. */
+@media (max-width: 900px) {
+  body.studio { height: auto; overflow: visible; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto; grid-template-areas: "top" "preview" "side"; }
+  .preview { aspect-ratio: 16 / 9; }
+  .side { overflow: visible; }
+  .side .panel.grows { flex: none; }
 }
 
 /* "Go live" from the hub when the browser still needs a click for sound. */

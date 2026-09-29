@@ -10,25 +10,26 @@
 </head>
 <body class="studio">
 
-<header class="bar">
-  <button id="layoutButton" class="menu-button" aria-haspopup="menu" aria-expanded="false" title="Layouts"><span id="layoutName">Main</span> ▾</button>
-  <span id="saveState" class="savestate" data-state="saved">Saved</span>
-  <span class="spacer"></span>
-  <span id="streamStatus" class="status" data-state="offline">Offline</span>
-  <button id="streamButton" class="primary">Start streaming</button>
-  <button id="settingsButton">Settings</button>
-  <form method="post" action="/api/logout"><button>Log out</button></form>
-</header>
+<div class="topbar">
+  <div class="actions">
+    <button id="layoutButton" class="menu-button" aria-haspopup="menu" aria-expanded="false" title="Layouts"><span id="layoutName">Main</span> ▾</button>
+    <button id="streamButton" class="primary">Start streaming</button>
+  </div>
+  <div class="statusline">
+    <span id="streamStatus" class="status" data-state="offline">Offline</span>
+    <span id="saveState" class="savestate" data-state="saved">Saved</span>
+  </div>
+</div>
 
-<main class="main">
-  <section class="preview">
-    <div class="stage">
-      <canvas id="program" width="1280" height="720"></canvas>
-      <canvas id="overlay" width="1280" height="720"></canvas>
-    </div>
-  </section>
+<section class="preview">
+  <div class="stage">
+    <canvas id="program" width="1280" height="720"></canvas>
+    <canvas id="overlay" width="1280" height="720"></canvas>
+  </div>
+</section>
 
-  <aside class="panel timer-panel">
+<aside class="side">
+  <section class="panel timer-panel">
     <div class="timer-title"><b id="timerGame">—</b> <span id="timerCategory"></span></div>
     <div id="timerClock" class="timer-clock">0:00.00</div>
     <button id="timerSplit" class="primary wide">Start</button>
@@ -44,11 +45,9 @@
       <button id="splitsEdit" title="Edit segments">Edit</button>
       <button id="hotkeysButton" title="Hotkeys" aria-label="Hotkeys">⌨</button>
     </div>
-  </aside>
-</main>
+  </section>
 
-<footer class="docks">
-  <section class="panel">
+  <section class="panel grows">
     <div class="dock-head">
       <h2>Sources</h2>
       <button id="addCamera" title="Add a camera or capture card">+ Video</button>
@@ -57,6 +56,7 @@
     </div>
     <ul id="sourceList" class="list"></ul>
   </section>
+
   <section class="panel">
     <div class="dock-head"><h2>Green screen</h2><span id="greenName" class="dim"></span></div>
     <div class="row tight">
@@ -67,11 +67,15 @@
     </div>
     <p id="greenHint" class="hint" hidden></p>
   </section>
-  <section class="panel">
-    <div class="dock-head"><h2>Audio</h2><button id="addAudio" title="Add a microphone or capture card audio">+ Input</button></div>
+
+  <section class="panel grows">
+    <div class="dock-head"><h2>Audio</h2><button id="addAudio" title="Add a microphone, capture card audio or other input">+ Input</button></div>
+    <p id="audioPaused" class="hint" hidden>Sound starts at your first click or key press on this page.</p>
     <div id="mixer"></div>
   </section>
-</footer>
+</aside>
+
+<form id="logoutForm" method="post" action="/api/logout" hidden></form>
 
 <dialog id="keyDialog" class="mini">
   <form id="keyForm" class="row tight">
@@ -86,34 +90,6 @@
     <p class="hint">Click a box and press a key. Backspace clears it. They work while this tab has focus.</p>
     <div class="grid2" id="hotkeyFields"></div>
     <div class="row end"><button value="save" class="primary">Save</button></div>
-  </form>
-</dialog>
-
-<dialog id="settingsDialog">
-  <form method="dialog" id="settingsForm">
-    <h2>Settings</h2>
-    <h3>Twitch</h3>
-    <label>Server
-      <input id="setIngest" placeholder="rtmp://ingest.global-contribute.live-video.net/app">
-    </label>
-    <label class="check"><input type="checkbox" id="setTest"> Bandwidth test (sends to Twitch without going public)</label>
-    <h3>Video</h3>
-    <div class="grid2">
-      <label>Resolution
-        <select id="setResolution"><option value="1280x720">1280 × 720</option><option value="1920x1080">1920 × 1080</option></select>
-      </label>
-      <label>Frame rate
-        <select id="setFps"><option>30</option><option>60</option></select>
-      </label>
-      <label>Bitrate (kbps)
-        <input type="number" id="setBitrate" min="500" max="8000" step="100">
-      </label>
-    </div>
-    <p class="error" id="settingsError"></p>
-    <div class="row end">
-      <button value="cancel" formnovalidate>Cancel</button>
-      <button id="settingsSave" value="save" class="primary">Save</button>
-    </div>
   </form>
 </dialog>
 
