@@ -64,6 +64,35 @@ See README.md for features, install and tests.
   (the workflow now lowers the unprivileged port range; elsewhere that part
   skips with the reason), and the audio meter test sampled too sparsely.
 
+## September 29: simpler UI, shared layouts
+
+Deployed at t.six7.pw (data backed up first to
+`~/six7-backups/streamstudio-data-20260929-103526.tgz` on the VPS).
+
+- Twitch server defaults to the global ingest
+  `rtmp://ingest.global-contribute.live-video.net/app`; a saved
+  `rtmp://live.twitch.tv/app` is moved to it.
+- Properties panel removed. Cameras open at fixed defaults (up to 1080p60,
+  shape matched once); a small Green screen panel (on/off, colour, upload)
+  works on the selected camera or else the first one; keying strength is
+  fixed. The screen source has a Share button in Sources, a failed camera a
+  Retry. Clicking the timer in Sources brings it to the front.
+- Layout menu at the top left: layouts, new/duplicate/rename/delete, and a
+  one-field Twitch stream key popup. The stream key left Settings; hotkeys
+  moved to a ⌨ popup under the timer.
+- Layouts carry a server revision (`rev`). Saves send the revision they were
+  based on; a stale one gets 409 with the current copy and the page merges
+  (keeps its edits plus layouts made elsewhere) and saves again. Pages poll
+  `GET /api/layouts?since=rev` every 5 s while visible and on focus, and adopt
+  newer copies when they have no unsaved changes (keeping their own active
+  layout, and a live stream's output size). Every change is also stashed in
+  localStorage until the server has it and restored on the next load if
+  nothing newer was saved. Device ids differ per browser, so cameras fall back
+  to the same name, then the default camera; audio inputs only to the same name.
+- Preview is now sized with container units, so it is never cropped when the
+  panel is narrower than 16:9 (it was before).
+- `npm test`: 59/59 locally, including real ffmpeg and Chromium.
+
 ## Not done
 
 - **Not yet done by a person:** signing in to the studio as the owner (the
