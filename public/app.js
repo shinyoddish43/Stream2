@@ -13,7 +13,17 @@ const OUTPUT = { width: 1280, height: 720, fps: 30, bitrate: 4500 };
 // An audio input saved as DEFAULT_MIC is the default microphone of whichever
 // browser and device the studio runs on, so it works everywhere.
 const DEFAULT_MIC = 'default';
-const NOT_HERE = 'not on this device';
+const NOT_HERE = 'not connected';
+// Any other input belongs to the computer it was added on (a random id kept in
+// this browser). Another computer leaves it out instead of calling it missing.
+const ELSEWHERE = 'on another computer';
+const computer = (() => {
+  try {
+    let id = localStorage.getItem('studio.computer');
+    if (!id) { id = uid() + uid(); localStorage.setItem('studio.computer', id); }
+    return id;
+  } catch { return ''; }   // storage off: inputs stay unclaimed, as before
+})();
 const STOPPED = 'stopped. It was unplugged, or the computer’s sound system restarted';
 // Changes not yet on the server, kept in this browser until they are.
 const STASH = 'studio.unsaved';
@@ -309,8 +319,17 @@ async function openInput(input) {
     mixer.add(input.id, stream, { ...input, label: inputName(input, stream) });
     missingAudio.delete(input.id);
     watchEnd(input.id, stream);
+    // Saved before inputs knew their computer: it works here, so it is this one's.
+    if (input.deviceId !== DEFAULT_MIC && !input.computer && computer) {
+      const saved = doc.audio.find((a) => a.id === input.id);
+      if (saved) { saved.computer = computer; save(); }
+    }
   } catch (e) {
-    missingAudio.set(input.id, audioProblem(e));
+    const problem = audioProblem(e);
+    const mine = input.deviceId === DEFAULT_MIC || input.computer === computer;
+    // Another computer's input, or an unclaimed one this computer does not have.
+    const theirs = !mine && (input.computer || problem === NOT_HERE);
+    missingAudio.set(input.id, theirs ? ELSEWHERE : problem);
   }
 }
 
@@ -601,10 +620,10 @@ function btn(text, fn, className = '') {
 function renderMixer() {
   const host = $('mixer');
   const strips = [...mixer.strips.values()];
-  const missing = doc.audio.filter((a) => missingAudio.has(a.id) && !mixer.strips.has(a.id));
+  const missing = doc.audio.filter((a) => missingAudio.has(a.id) && missingAudio.get(a.id) !== ELSEWHERE && !mixer.strips.has(a.id));
   $('audioPaused').hidden = !strips.length || mixer.ctx.state === 'running';
   if (!strips.length && !missing.length) {
-    host.innerHTML = '<p class="hint">No audio yet: add a mic or capture card, or share a screen with sound.</p>';
+    host.innerHTML = '<p class="hint">No audio on this computer yet: add a mic or capture card, or share a screen with sound.</p>';
     return;
   }
   const name = (text) => Object.assign(document.createElement('span'), { className: 'name', textContent: text, title: text });
@@ -678,6 +697,7 @@ $('addAudio').addEventListener('click', async (e) => {
 
 async function addAudioInput(device) {
   const entry = { id: uid(), deviceId: device.deviceId, label: device.label || 'Audio input', gain: 1, muted: false };
+  if (entry.deviceId !== DEFAULT_MIC && computer) entry.computer = computer;
   try {
     const stream = await openAudioInput(entry.deviceId, entry.label);
     mixer.add(entry.id, stream, { ...entry, label: inputName(entry, stream) });

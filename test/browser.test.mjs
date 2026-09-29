@@ -186,10 +186,15 @@ test('the mixer says when sound waits for the page to be used, and a key press s
 });
 
 test('a capture device can be added and shows up on the canvas', { skip }, async () => {
+  const sourcesBox = () => page.$eval('.sources-panel', (p) => p.getBoundingClientRect().height);
+  const before = await sourcesBox();
+  assert.ok(before < 80, `the Sources box fits its one source: ${before}px`);
   await addDevice(page, '#addCamera');
   await page.waitForTimeout(2000);
   const count = await page.$$eval('#sourceList li', (lis) => lis.length);
   assert.equal(count, 2);
+  const after = await sourcesBox();
+  assert.ok(after > before + 15, `the Sources box grows with its list: ${before}px, then ${after}px`);
   const live = await page.evaluate(() => [...window.studio.compositor.feeds.values()].some((f) => f.ready));
   assert.ok(live, 'the fake camera did not start');
   assert.equal(await page.$eval('#greenOn', (i) => i.disabled), false, 'the green screen menu works on the new camera');
@@ -418,16 +423,17 @@ test('audio inputs appear in the mixer with a live meter', { skip }, async () =>
   assert.ok(await meterMoves(page), 'the meter never moved');
 });
 
-test('a mic saved on another computer can become this computer\'s default mic', { skip }, async () => {
+test('a mic missing from its own computer can become the default mic', { skip }, async () => {
   await page.evaluate(() => {
     const { studio } = window;
-    studio.doc.audio = [{ id: 'elsewhere1', deviceId: 'a-device-this-browser-never-had', label: 'Internal Mic', gain: 1.5, muted: false }];
+    const me = localStorage.getItem('studio.computer');
+    studio.doc.audio = [{ id: 'elsewhere1', deviceId: 'a-device-now-unplugged', label: 'USB Mic', gain: 1.5, muted: false, computer: me }];
     studio.save();
     return studio.flush();
   });
   await page.reload();
   await page.waitForSelector('#mixer .strip.missing');
-  assert.match(await page.textContent('#mixer .strip.missing'), /Internal Mic: not on this device/);
+  assert.match(await page.textContent('#mixer .strip.missing'), /USB Mic: not connected/);
   await page.click('#mixer .strip.missing button:has-text("Use default mic")');
   await page.waitForSelector('#mixer .strip:not(.missing)');
   assert.match(await page.textContent('#mixer .strip .name'), /^Default mic · /);
@@ -449,6 +455,52 @@ test('a blocked microphone says so, instead of "not found"', { skip }, async () 
   assert.match(text, /^Default microphone: blocked\. Allow the microphone for this site/);
   assert.doesNotMatch(text, /Use default mic/, 'the default mic would be blocked too');
   await other.close();
+});
+
+test('an input belongs to its computer: others leave it out, its own says when it is missing', { skip }, async () => {
+  const me = await page.evaluate(() => localStorage.getItem('studio.computer'));
+  assert.ok(me, 'this browser has a computer id');
+  await page.evaluate((me) => {
+    const { studio } = window;
+    studio.doc.audio = [
+      { id: 'dflt0001', deviceId: 'default', label: 'Default microphone', gain: 1, muted: false },
+      { id: 'there001', deviceId: 'gone-a', label: 'Other Computer Mic', gain: 1, muted: false, computer: 'another-computer' },
+      { id: 'legacy01', deviceId: 'gone-b', label: 'Old Unclaimed Mic', gain: 1, muted: false },
+      { id: 'here0001', deviceId: 'gone-c', label: 'Unplugged USB Mic', gain: 1, muted: false, computer: me },
+      { id: 'claim001', deviceId: 'gone-d', label: 'Fake Audio Input 1', gain: 1, muted: false },
+    ];
+    studio.save();
+    return studio.flush();
+  }, me);
+  await page.reload();
+  await page.waitForSelector('#mixer .strip.missing');
+  await until(page, () => window.studio.doc.audio.find((a) => a.id === 'claim001').computer !== undefined);
+  const here = await page.textContent('#mixer');
+  assert.match(here, /Unplugged USB Mic: not connected/, 'this computer\'s own input says it is missing');
+  assert.doesNotMatch(here, /Other Computer Mic|Old Unclaimed Mic/, 'no errors for other computers\' inputs');
+  const working = await page.$$eval('#mixer .strip:not(.missing) .name', (n) => n.map((x) => x.textContent));
+  assert.ok(working.includes('Fake Audio Input 1'), `found here by its name: ${working}`);
+  assert.equal(await page.evaluate(() => window.studio.doc.audio.find((a) => a.id === 'claim001').computer), me,
+    'an unclaimed input that works here becomes this computer\'s');
+
+  // Another computer: nothing about this one's inputs.
+  await page.evaluate(() => window.studio.flush());
+  const other = await browser.newContext();
+  const b = await other.newPage();
+  await b.request.post(`${server.url}/api/login`, { data: { user: USER, password: PASSWORD }, headers: { Origin: server.url } });
+  await b.goto(`${server.url}/`);
+  await until(b, () => window.studio && window.studio.mixer.strips.size >= 1);
+  await b.waitForTimeout(800);
+  const there = await b.textContent('#mixer');
+  assert.doesNotMatch(there, /Unplugged USB Mic|Other Computer Mic|Old Unclaimed Mic|not connected/, there);
+  await other.close();
+
+  await page.evaluate(() => {
+    const { studio } = window;
+    studio.doc.audio = studio.doc.audio.filter((a) => a.id === 'dflt0001');
+    studio.save();
+    return studio.flush();
+  });
 });
 
 test('going live asks for the stream key, then sends the stream to Twitch\'s global ingest', { skip }, async () => {
