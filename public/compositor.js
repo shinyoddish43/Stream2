@@ -4,9 +4,12 @@
 
 import { drawTimer } from './timer.js';
 
-export const feedKey = (src) => (src.type === 'screen' ? 'screen' : `cam:${src.deviceId || 'default'}:${src.resolution || '1080p'}`);
+export const feedKey = (src) => (src.type === 'screen' ? 'screen' : `cam:${src.deviceId || 'default'}`);
 
-const RESOLUTIONS = { '720p': [1280, 720], '1080p': [1920, 1080] };
+// Keying strength, fixed: 0 is the key colour, 1 is grey (see Keyer). These
+// key a typical green screen and leave people alone.
+const SIMILARITY = 0.5;
+const SMOOTHNESS = 0.2;
 
 /** A live video: a webcam, a USB/HDMI capture card, or a screen share. */
 class Feed {
@@ -45,15 +48,24 @@ class Feed {
   }
 }
 
-export function openCamera(deviceId, resolution) {
-  const [width, height] = RESOLUTIONS[resolution] || RESOLUTIONS['1080p'];
-  return navigator.mediaDevices.getUserMedia({
-    video: {
-      deviceId: deviceId ? { exact: deviceId } : undefined,
-      width: { ideal: width }, height: { ideal: height }, frameRate: { ideal: 60 },
-    },
+/**
+ * A camera or capture card at the best it offers up to 1080p60. Device ids
+ * differ between browsers and devices, so a layout saved elsewhere falls back
+ * to the device with the same name, and then to the default camera.
+ */
+export async function openCamera(deviceId, label) {
+  const open = (id) => navigator.mediaDevices.getUserMedia({
+    video: { deviceId: id ? { exact: id } : undefined, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } },
     audio: false,
   });
+  try {
+    return await open(deviceId);
+  } catch (e) {
+    if (!deviceId || !['OverconstrainedError', 'NotFoundError'].includes(e.name)) throw e;
+    const cams = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
+    const same = label && cams.find((d) => d.label === label);
+    return open(same ? same.deviceId : undefined);
+  }
 }
 
 export function openScreen() {
@@ -134,8 +146,8 @@ class Keyer {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
     const hex = /^#?([0-9a-f]{6})$/i.exec(chroma.color || '') ? chroma.color.replace('#', '') : '00ff00';
     gl.uniform3f(this.u.key, ...[0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255));
-    gl.uniform1f(this.u.similarity, Number(chroma.similarity ?? 0.5));
-    gl.uniform1f(this.u.smoothness, Math.max(0.001, Number(chroma.smoothness ?? 0.2)));
+    gl.uniform1f(this.u.similarity, SIMILARITY);
+    gl.uniform1f(this.u.smoothness, SMOOTHNESS);
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -170,7 +182,6 @@ export class Compositor {
     this.keyer = new Keyer();
     this.selected = null;
     this.drag = null;
-    this.picking = null;              // eyedropper callback
     this.lastFrame = 0;
     this.bindPointer();
   }
@@ -280,7 +291,7 @@ export class Compositor {
       octx.strokeRect(src.x, src.y, src.w, src.h);
       octx.setLineDash([]);
       octx.fillStyle = 'rgba(255,255,255,0.7)';
-      const why = !feed || feed.status === 'idle' ? (src.type === 'screen' ? 'click Share screen in Properties' : 'not started')
+      const why = !feed || feed.status === 'idle' ? (src.type === 'screen' ? 'click Share in Sources' : 'not started')
         : feed.status === 'opening' ? 'starting…' : feed.status === 'ended' ? 'sharing stopped' : feed.error;
       octx.fillText(`${src.name}: ${why}`, src.x + 10 * s, src.y + 10 * s);
     }
@@ -310,12 +321,6 @@ export class Compositor {
     this.onSelect(id);
   }
 
-  /** Next click on the preview samples a colour from this source's raw video. */
-  pickColor(src, callback) {
-    this.picking = { src, callback };
-    this.overlay.classList.add('picking');
-  }
-
   bindPointer() {
     const el = this.overlay;
     const at = (e) => {
@@ -326,7 +331,6 @@ export class Compositor {
       const p = at(e);
       const layout = this.layout();
       if (!layout) return;
-      if (this.picking) { this.samplePick(p); return; }
       const sel = layout.sources.find((x) => x.id === this.selected);
       const grab = 14 * this.scale();
       if (sel) {
@@ -373,20 +377,5 @@ export class Compositor {
     if (Math.abs(pos) < t) return 0;
     if (Math.abs(pos + size - limit) < t) return limit - size;
     return Math.round(pos);
-  }
-
-  samplePick(p) {
-    const { src, callback } = this.picking;
-    this.picking = null;
-    this.overlay.classList.remove('picking');
-    const feed = this.feeds.get(feedKey(src));
-    if (!feed || !feed.ready || p.x < src.x || p.y < src.y || p.x > src.x + src.w || p.y > src.y + src.h) return;
-    const v = feed.video;
-    const probe = document.createElement('canvas');
-    probe.width = probe.height = 1;
-    const pctx = probe.getContext('2d', { willReadFrequently: true });
-    pctx.drawImage(v, ((p.x - src.x) / src.w) * v.videoWidth, ((p.y - src.y) / src.h) * v.videoHeight, 1, 1, 0, 0, 1, 1);
-    const [r, g, b] = pctx.getImageData(0, 0, 1, 1).data;
-    callback('#' + [r, g, b].map((n) => n.toString(16).padStart(2, '0')).join(''));
   }
 }

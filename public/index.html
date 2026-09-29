@@ -11,14 +11,8 @@
 <body class="studio">
 
 <header class="bar">
-  <strong class="brand">Stream Studio</strong>
-  <label class="inline">Layout
-    <select id="layoutSelect" aria-label="Layout"></select>
-  </label>
-  <button id="layoutNew">New</button>
-  <button id="layoutCopy">Duplicate</button>
-  <button id="layoutRename">Rename</button>
-  <button id="layoutDelete">Delete</button>
+  <button id="layoutButton" class="menu-button" aria-haspopup="menu" aria-expanded="false" title="Layouts"><span id="layoutName">Main</span> ▾</button>
+  <span id="saveState" class="savestate" data-state="saved">Saved</span>
   <span class="spacer"></span>
   <span id="streamStatus" class="status" data-state="offline">Offline</span>
   <button id="streamButton" class="primary">Start streaming</button>
@@ -35,59 +29,72 @@
   </section>
 
   <aside class="panel timer-panel">
-    <h2>Timer</h2>
-    <div class="timer-title"><b id="timerGame">—</b><span id="timerCategory"></span></div>
+    <div class="timer-title"><b id="timerGame">—</b> <span id="timerCategory"></span></div>
     <div id="timerClock" class="timer-clock">0:00.00</div>
-    <div class="row">
-      <button id="timerSplit" class="primary grow">Start</button>
+    <button id="timerSplit" class="primary wide">Start</button>
+    <div class="row tight">
       <button id="timerUndo" title="Undo split">Undo</button>
       <button id="timerSkip" title="Skip split">Skip</button>
+      <button id="timerPause">Pause</button>
+      <button id="timerReset" class="danger">Reset</button>
     </div>
-    <div class="row">
-      <button id="timerPause" class="grow">Pause</button>
-      <button id="timerReset" class="danger grow">Reset</button>
+    <div class="row tight">
+      <button id="splitsImport" title="Import LiveSplit splits (.lss)">Import</button>
+      <button id="splitsExport" title="Export LiveSplit splits (.lss)">Export</button>
+      <button id="splitsEdit" title="Edit segments">Edit</button>
+      <button id="hotkeysButton" title="Hotkeys" aria-label="Hotkeys">⌨</button>
     </div>
-    <h3>Splits</h3>
-    <div class="row">
-      <button id="splitsImport" class="grow">Import .lss</button>
-      <button id="splitsExport" class="grow">Export .lss</button>
-    </div>
-    <button id="splitsEdit">Edit segments</button>
-    <p class="hint" id="hotkeyHint"></p>
   </aside>
 </main>
 
 <footer class="docks">
   <section class="panel">
-    <h2>Sources</h2>
-    <ul id="sourceList" class="list"></ul>
-    <div class="row wrap">
-      <button id="addCamera">+ Video device</button>
-      <button id="addScreen">+ Screen</button>
-      <button id="addTimer">+ Timer</button>
+    <div class="dock-head">
+      <h2>Sources</h2>
+      <button id="addCamera" title="Add a camera or capture card">+ Video</button>
+      <button id="addScreen" title="Share a screen or window">+ Screen</button>
+      <button id="addTimer" title="Add the timer">+ Timer</button>
     </div>
+    <ul id="sourceList" class="list"></ul>
   </section>
   <section class="panel">
-    <h2>Properties</h2>
-    <div id="props"><p class="hint">Select a source in the list or on the preview.</p></div>
+    <div class="dock-head"><h2>Green screen</h2><span id="greenName" class="dim"></span></div>
+    <div class="row tight">
+      <label class="check"><input type="checkbox" id="greenOn"> On</label>
+      <input type="color" id="greenColor" value="#00ff00" aria-label="Key colour" title="Key colour">
+      <button id="greenUpload">Upload background</button>
+      <button id="greenClear" title="Remove the background" aria-label="Remove the background" hidden>✕</button>
+    </div>
+    <p id="greenHint" class="hint" hidden></p>
   </section>
   <section class="panel">
-    <h2>Audio</h2>
+    <div class="dock-head"><h2>Audio</h2><button id="addAudio" title="Add a microphone or capture card audio">+ Input</button></div>
     <div id="mixer"></div>
-    <button id="addAudio">+ Audio input</button>
   </section>
 </footer>
+
+<dialog id="keyDialog" class="mini">
+  <form id="keyForm" class="row tight">
+    <input type="password" id="streamKey" autocomplete="off" aria-label="Twitch stream key" placeholder="Twitch stream key">
+    <button class="primary">Save</button>
+  </form>
+</dialog>
+
+<dialog id="hotkeysDialog" class="mini">
+  <form method="dialog" id="hotkeysForm">
+    <h2>Hotkeys</h2>
+    <p class="hint">Click a box and press a key. Backspace clears it. They work while this tab has focus.</p>
+    <div class="grid2" id="hotkeyFields"></div>
+    <div class="row end"><button value="save" class="primary">Save</button></div>
+  </form>
+</dialog>
 
 <dialog id="settingsDialog">
   <form method="dialog" id="settingsForm">
     <h2>Settings</h2>
     <h3>Twitch</h3>
-    <label>Stream key
-      <input type="password" id="setKey" autocomplete="off" placeholder="live_…">
-    </label>
-    <p class="hint" id="keyState"></p>
     <label>Server
-      <input id="setIngest" placeholder="rtmp://live.twitch.tv/app">
+      <input id="setIngest" placeholder="rtmp://ingest.global-contribute.live-video.net/app">
     </label>
     <label class="check"><input type="checkbox" id="setTest"> Bandwidth test (sends to Twitch without going public)</label>
     <h3>Video</h3>
@@ -102,8 +109,6 @@
         <input type="number" id="setBitrate" min="500" max="8000" step="100">
       </label>
     </div>
-    <h3>Timer hotkeys <span class="hint">(click a box, press a key)</span></h3>
-    <div class="grid2" id="hotkeyFields"></div>
     <p class="error" id="settingsError"></p>
     <div class="row end">
       <button value="cancel" formnovalidate>Cancel</button>

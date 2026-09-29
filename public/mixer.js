@@ -73,12 +73,22 @@ export class Mixer {
 }
 
 /** Open an audio input with nothing applied: capture-card audio and a stream
- *  mic both want the raw signal, not a video-call filter. */
-export function openAudioInput(deviceId) {
-  return navigator.mediaDevices.getUserMedia({
+ *  mic both want the raw signal, not a video-call filter. Device ids differ
+ *  between browsers and devices, so one saved elsewhere is found by its name;
+ *  never by guessing, which could put the wrong microphone on stream. */
+export async function openAudioInput(deviceId, label) {
+  const open = (id) => navigator.mediaDevices.getUserMedia({
     audio: {
-      deviceId: deviceId ? { exact: deviceId } : undefined,
+      deviceId: id ? { exact: id } : undefined,
       echoCancellation: false, noiseSuppression: false, autoGainControl: false,
     },
   });
+  try {
+    return await open(deviceId);
+  } catch (e) {
+    if (!deviceId || !label || !['OverconstrainedError', 'NotFoundError'].includes(e.name)) throw e;
+    const same = (await navigator.mediaDevices.enumerateDevices()).find((d) => d.kind === 'audioinput' && d.label === label && d.deviceId !== deviceId);
+    if (!same) throw e;
+    return open(same.deviceId);
+  }
 }
