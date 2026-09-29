@@ -93,6 +93,35 @@ Deployed at t.six7.pw (data backed up first to
   panel is narrower than 16:9 (it was before).
 - `npm test`: 59/59 locally, including real ffmpeg and Chromium.
 
+## September 29, later: one column, no settings, the default mic
+
+Deployed (data backup `~/six7-backups/streamstudio-data-20260929T164542Z.tgz`),
+CI 63/63.
+
+- No header, no bottom bar: the preview fills the window's height at 16:9 on
+  the left; the right column has the layout menu and Start streaming in the
+  top-right corner, then status, timer, sources, green screen, audio. Log out
+  is in the layout menu. Settings are gone (1280x720, 30 fps, 4500 kbps,
+  global ingest; the server API still takes `ingest`/`testMode`, the tests use
+  it).
+- Audio: `deviceId: "default"` means the default mic of whichever computer
+  the studio runs on; new studios start with it. Missing inputs say why (not
+  on this device / blocked / in use); a mic from another computer offers
+  "Use default mic". Meter is post-volume, pre-mute, in dB; sound resumes on
+  the first pointerdown or keydown.
+- The owner's saved doc has one input, "Internal Mic" (made on a ChromeOS-like
+  device: "Front Camera (0408:4058)"), saved **muted**.
+- "Default internal mic not detected" on odd-box (ThinkPad E14 Gen 4 AMD,
+  21EB): the real mic is a digital mic on the AMD ACP (PCI 04:00.5), and no
+  driver binds to it (`snd_rn_pci_acp3x` probes and declines: the BIOS does
+  not advertise the mic to its ACPI check), so Linux has no internal mic. The
+  only capture device is the Realtek codec's "Internal Mic" pin, which is not
+  wired: it records full-scale DC and clipping (measured: 64% of samples
+  clipped). The analog card is also in PipeWire's Pro Audio profile. Owner fix
+  (sudo): `options snd_rn_pci_acp3x dmic_acpi_check=1` in
+  `/etc/modprobe.d/`, reload the module or reboot, then pick the new digital
+  mic as the default input. Not yet verified.
+
 ## Not done
 
 - **Not yet done by a person:** signing in to the studio as the owner (the
