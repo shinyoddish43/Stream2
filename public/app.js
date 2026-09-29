@@ -14,6 +14,7 @@ const OUTPUT = { width: 1280, height: 720, fps: 30, bitrate: 4500 };
 // browser and device the studio runs on, so it works everywhere.
 const DEFAULT_MIC = 'default';
 const NOT_HERE = 'not on this device';
+const STOPPED = 'stopped. It was unplugged, or the computer’s sound system restarted';
 // Changes not yet on the server, kept in this browser until they are.
 const STASH = 'studio.unsaved';
 const clientId = uid();
@@ -296,16 +297,41 @@ function startScreen() {
 async function openSavedAudio(retry = false) {
   for (const input of doc.audio) {
     if (mixer.strips.has(input.id) || (!retry && missingAudio.has(input.id))) continue;
-    try {
-      const stream = await openAudioInput(input.deviceId, input.label);
-      if (!doc.audio.some((a) => a.id === input.id)) { stream.getTracks().forEach((t) => t.stop()); continue; }
-      mixer.add(input.id, stream, { ...input, label: inputName(input, stream) });
-      missingAudio.delete(input.id);
-    } catch (e) {
-      missingAudio.set(input.id, audioProblem(e));
-    }
+    await openInput(input);
   }
   renderMixer();
+}
+
+async function openInput(input) {
+  try {
+    const stream = await openAudioInput(input.deviceId, input.label);
+    if (!doc.audio.some((a) => a.id === input.id)) { stream.getTracks().forEach((t) => t.stop()); return; }
+    mixer.add(input.id, stream, { ...input, label: inputName(input, stream) });
+    missingAudio.delete(input.id);
+    watchEnd(input.id, stream);
+  } catch (e) {
+    missingAudio.set(input.id, audioProblem(e));
+  }
+}
+
+// An input that stops by itself says so, and is tried once more shortly:
+// a sound system that restarts is usually back within a second.
+function watchEnd(id, stream) {
+  const track = stream.getAudioTracks()[0];
+  if (!track) return;
+  track.addEventListener('ended', () => {
+    const strip = mixer.strips.get(id);
+    if (!strip || strip.track !== track) return;
+    mixer.remove(id);
+    missingAudio.set(id, STOPPED);
+    renderMixer();
+    setTimeout(async () => {
+      const input = doc.audio.find((a) => a.id === id);
+      if (!input || missingAudio.get(id) !== STOPPED) return;
+      await openInput(input);
+      renderMixer();
+    }, 1500);
+  });
 }
 
 // The default microphone shows which device it is on this computer.
@@ -655,6 +681,7 @@ async function addAudioInput(device) {
   try {
     const stream = await openAudioInput(entry.deviceId, entry.label);
     mixer.add(entry.id, stream, { ...entry, label: inputName(entry, stream) });
+    watchEnd(entry.id, stream);
     doc.audio.push(entry);
     save();
     renderMixer();

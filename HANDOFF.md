@@ -111,16 +111,20 @@ CI 63/63.
   the first pointerdown or keydown.
 - The owner's saved doc has one input, "Internal Mic" (made on a ChromeOS-like
   device: "Front Camera (0408:4058)"), saved **muted**.
-- "Default internal mic not detected" on odd-box (ThinkPad E14 Gen 4 AMD,
-  21EB): the real mic is a digital mic on the AMD ACP (PCI 04:00.5), and no
-  driver binds to it (`snd_rn_pci_acp3x` probes and declines: the BIOS does
-  not advertise the mic to its ACPI check), so Linux has no internal mic. The
-  only capture device is the Realtek codec's "Internal Mic" pin, which is not
-  wired: it records full-scale DC and clipping (measured: 64% of samples
-  clipped). The analog card is also in PipeWire's Pro Audio profile. Owner fix
-  (sudo): `options snd_rn_pci_acp3x dmic_acpi_check=1` in
-  `/etc/modprobe.d/`, reload the module or reboot, then pick the new digital
-  mic as the default input. Not yet verified.
+- "Default internal mic not detected" on odd-box (ThinkPad E14 Gen 4 AMD):
+  the internal mic is the Realtek ALC257's analog "Internal Mic" (the
+  card's only capture, `pro-input-0`; Chrome calls it "Family 17h/19h HD
+  Audio Controller Pro"). It was unusable because its hardware gain sat at
+  +60 dB (Capture +30, Internal Mic Boost +30: left from an earlier profile's
+  100% input volume; the Pro Audio profile never resets it), which pinned it
+  to full scale, and PipeWire had it muted. Fixed on odd-box: Capture 0 dB,
+  Internal Mic Boost +20 dB (clean, room at about -41 dBFS), unmuted, default
+  input; `alsa-restore` keeps the levels across reboots. A first guess (the
+  AMD ACP digital mic, `options snd_rn_pci_acp3x dmic_acpi_check=1`) was
+  wrong: that card appears but reads constant 0x80000000, nothing is wired to
+  it; the owner can delete `/etc/modprobe.d/thinkpad-dmic.conf`.
+- A mic that stops by itself (unplugged, sound system restarted) now shows
+  "stopped" and is tried again once after 1.5 s. CI 64/64 expected.
 
 ## Not done
 

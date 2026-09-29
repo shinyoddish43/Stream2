@@ -165,6 +165,18 @@ test('a new studio starts with this computer\'s default microphone, and its mete
   assert.equal(await page.$('#mixer .strip.is-muted'), null);
 });
 
+test('a mic that stops by itself says so, and comes back when it can', { skip }, async () => {
+  // What a computer's sound system restarting looks like to the page.
+  await page.evaluate(() => {
+    const [strip] = window.studio.mixer.strips.values();
+    strip.track.dispatchEvent(new Event('ended'));
+  });
+  await page.waitForSelector('#mixer .strip.missing');
+  assert.match(await page.textContent('#mixer .strip.missing'), /^Default microphone: stopped\. It was unplugged, or the computer’s sound system restarted/);
+  await page.waitForSelector('#mixer .strip:not(.missing)', { timeout: 5000 });
+  assert.match(await page.textContent('#mixer .strip .name'), /^Default mic · /, 'tried again by itself');
+});
+
 test('the mixer says when sound waits for the page to be used, and a key press starts it', { skip }, async () => {
   await page.evaluate(() => window.studio.mixer.ctx.suspend());
   await page.waitForSelector('#audioPaused:not([hidden])');
