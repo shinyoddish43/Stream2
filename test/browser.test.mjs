@@ -1,6 +1,7 @@
 // The studio in a real browser: sign in, add a capture device, key a green
 // screen onto an uploaded background, run the timer, move splits in and out,
-// keep layouts across a reload, and go live. Skipped without Playwright.
+// keep layouts across a reload and between two browsers, and go live.
+// Skipped without Playwright.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -11,7 +12,7 @@ let chromium;
 try { ({ chromium } = await import(process.env.PLAYWRIGHT_PATH || 'playwright')); } catch { /* skipped below */ }
 const skip = !chromium && 'playwright is not installed';
 
-let server, browser, page;
+let server, browser, context, page;
 const errors = [];
 
 before(async () => {
@@ -21,7 +22,7 @@ before(async () => {
     executablePath: process.env.CHROMIUM_PATH === '' ? undefined : (process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium'),
     args: ['--no-sandbox', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'],
   });
-  const context = await browser.newContext({ viewport: { width: 1500, height: 900 }, acceptDownloads: true });
+  context = await browser.newContext({ viewport: { width: 1500, height: 900 }, acceptDownloads: true });
   // A synthetic "camera": solid green with a red square, standing in for a
   // person in front of a green screen. Switched on per test.
   await context.addInitScript(() => {
@@ -50,10 +51,33 @@ before(async () => {
   page.setDefaultTimeout(10000);
   page.on('pageerror', (e) => errors.push(e.message));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
-  page.on('dialog', (d) => d.accept(d.defaultValue() || undefined));
+  page.on('dialog', answer);
 });
 
+// prompt() and confirm() are accepted: with the next queued answer, or as offered.
+const answers = [];
+const answer = (d) => d.accept(answers.length ? answers.shift() : d.defaultValue() || undefined);
+
 after(async () => { if (browser) await browser.close(); if (server) server.stop(); });
+
+// Open the layout menu and pick an entry: a layout by position, or an action.
+async function layoutMenu(p, pick) {
+  await p.click('#layoutButton');
+  await p.click(typeof pick === 'number' ? `.menu [role=menuitemradio] >> nth=${pick}` : `.menu [data-action=${pick}]`);
+  await p.waitForTimeout(200);
+}
+const layoutNames = async (p) => {
+  await p.click('#layoutButton');
+  const names = await p.$$eval('.menu [role=menuitemradio]', (items) => items.map((i) => i.textContent));
+  await p.keyboard.press('Escape');
+  return names;
+};
+// A device button either adds the only device or offers a menu of them.
+async function addDevice(p, button) {
+  await p.click(button);
+  await p.waitForTimeout(400);
+  if (await p.$('.menu')) await p.click('.menu button >> nth=0');
+}
 
 const pixel = (x, y) => page.evaluate(([x, y]) => Array.from(document.getElementById('program').getContext('2d').getImageData(x, y, 1, 1).data).slice(0, 3), [x, y]);
 
@@ -80,15 +104,33 @@ test('the default layout draws the timer', { skip }, async () => {
   assert.ok(r + g + b > 0 && r + g + b < 120, `timer background ${r},${g},${b}`);
 });
 
+test('the page is the simple one: no properties panel, no layout buttons in the bar', { skip }, async () => {
+  assert.equal(await page.$('#props'), null);
+  assert.equal(await page.$('#layoutSelect'), null);
+  const bar = await page.textContent('header.bar');
+  assert.doesNotMatch(bar, /Stream Studio|Layout|Duplicate|Rename|Delete/);
+  assert.equal(await page.textContent('#layoutName'), 'Main');
+  assert.equal(await page.$eval('#greenOn', (i) => i.disabled), true, 'no camera yet, nothing to key');
+  // The preview is 16:9 and fits its panel: never cropped or stretched.
+  const fit = await page.evaluate(() => {
+    const s = document.querySelector('.stage').getBoundingClientRect();
+    const p = document.querySelector('.preview').getBoundingClientRect();
+    return { ratio: s.width / s.height, inside: s.width <= p.width + 1 && s.height <= p.height + 1 };
+  });
+  assert.ok(Math.abs(fit.ratio - 16 / 9) < 0.01 && fit.inside, JSON.stringify(fit));
+});
+
 test('a capture device can be added and shows up on the canvas', { skip }, async () => {
-  await page.click('#addCamera');
+  await addDevice(page, '#addCamera');
   await page.waitForTimeout(2000);
   const count = await page.$$eval('#sourceList li', (lis) => lis.length);
   assert.equal(count, 2);
   const live = await page.evaluate(() => [...window.studio.compositor.feeds.values()].some((f) => f.ready));
   assert.ok(live, 'the fake camera did not start');
-  const selectedName = await page.$eval('#props input', (i) => i.value);
-  assert.ok(selectedName.length > 0);
+  assert.equal(await page.$eval('#greenOn', (i) => i.disabled), false, 'the green screen menu works on the new camera');
+  const cam = await page.evaluate(() => window.studio.doc.layouts[0].sources.find((s) => s.type === 'camera'));
+  assert.ok(cam.name.length > 0);
+  assert.equal(cam.resolution, undefined, 'cameras open at fixed defaults');
 });
 
 test('green screen: the green becomes the uploaded background, the subject stays', { skip }, async () => {
@@ -105,37 +147,36 @@ test('green screen: the green becomes the uploaded background, the subject stays
     const feed = compositor.feed(cam);
     feed.status = 'idle';
   });
-  // Re-open through the app's own path.
-  await page.evaluate(() => document.querySelector('#props select').dispatchEvent(new Event('change')));
+  // Re-open through the app's own path: a stopped device offers Retry.
+  await page.evaluate(() => { for (const f of window.studio.compositor.feeds.values()) f.status = 'ended'; });
+  await page.click('#sourceList li[data-type=camera] .name');
+  await page.click('#sourceList li[data-type=camera] button:has-text("Retry")');
   await page.waitForTimeout(1500);
   assert.deepEqual(await pixel(50, 50), [16, 192, 48], 'before keying the green is on screen');
 
-  await page.check('#props input[type=checkbox]');
+  await page.check('#greenOn');
   // A solid blue picture as the background.
   const bg = join(server.data, 'blue.png');
   const png = await page.evaluate(() => { const c = document.createElement('canvas'); c.width = 64; c.height = 36; const g = c.getContext('2d'); g.fillStyle = '#0000ff'; g.fillRect(0, 0, 64, 36); return c.toDataURL('image/png').split(',')[1]; });
   writeFileSync(bg, Buffer.from(png, 'base64'));
   const chooser = page.waitForEvent('filechooser');
-  await page.click('#props button:has-text("Upload photo or video")');
+  await page.click('#greenUpload');
   await (await chooser).setFiles(bg);
   await page.waitForTimeout(1500);
+  assert.equal(await page.textContent('#greenUpload'), 'Change background');
 
   const [r1, g1, b1] = await pixel(50, 50);
   assert.ok(b1 > 200 && g1 < 60 && r1 < 60, `the green should now be blue, got ${r1},${g1},${b1}`);
   const [r2, g2, b2] = await pixel(320, 180);
   assert.ok(r2 > 200 && g2 < 60 && b2 < 60, `the subject should stay red, got ${r2},${g2},${b2}`);
 
-  // The eyedropper picks the key colour straight off the video — which is how
-  // a real screen gets keyed: never pure green.
-  await page.click('#props button:has-text("Pick from preview")');
-  const box = await page.$eval('#overlay', (c) => { const r = c.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height, cw: c.width }; });
-  const k = box.w / box.cw;
-  await page.mouse.click(box.x + 40 * k, box.y + 40 * k);
-  const picked = await page.$eval('#props input[type=color]', (i) => i.value);
-  assert.equal(picked, '#10c030');
+  // A real screen is never pure green: the colour selector (its eyedropper,
+  // in the browser's own picker) sets the green actually on camera.
+  await page.fill('#greenColor', '#10c030');
   await page.waitForTimeout(500);
+  assert.equal(await page.evaluate(() => window.studio.doc.layouts[0].sources.find((s) => s.type === 'camera').chroma.color), '#10c030');
 
-  // With the picked colour and the default settings, people must survive.
+  // With that colour and the fixed keying strength, people must survive.
   const close = ([a, b, c], hex) => {
     const [x, y, z] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
     return Math.abs(a - x) + Math.abs(b - y) + Math.abs(c - z) < 40;
@@ -167,19 +208,91 @@ test('dragging moves a source and it stays put after a reload', { skip }, async 
   assert.ok(reloaded.chroma && reloaded.bg, 'green-screen settings survive a reload');
 });
 
-test('layouts: a new one is added, switched to, and remembered', { skip }, async () => {
-  await page.click('#layoutNew');                       // prompt() accepted with its default
-  await page.waitForTimeout(300);
-  let names = await page.$$eval('#layoutSelect option', (o) => o.map((x) => x.textContent));
-  assert.equal(names.length, 2);
+test('the timer comes to the front when picked in the source list', { skip }, async () => {
+  const order = () => page.evaluate(() => window.studio.doc.layouts[0].sources.map((s) => s.type));
+  assert.deepEqual(await order(), ['timer', 'camera'], 'the camera was added on top');
+  await page.click('#sourceList li[data-type=timer] .name');
+  assert.deepEqual(await order(), ['camera', 'timer']);
+  assert.equal(await page.evaluate(() => window.studio.compositor.selected), await page.evaluate(() => window.studio.doc.layouts[0].sources[1].id));
+});
+
+test('layouts: new, duplicate, rename and delete live in the layout menu, and are remembered', { skip }, async () => {
+  await layoutMenu(page, 'new');                        // prompt() accepted with its default
+  assert.deepEqual(await layoutNames(page), ['Main', 'Layout 2']);
+  assert.equal(await page.textContent('#layoutName'), 'Layout 2');
   assert.equal(await page.$$eval('#sourceList li', (lis) => lis.length), 0, 'a new layout starts empty');
+
+  await layoutMenu(page, 0);
+  await layoutMenu(page, 'duplicate');
+  assert.deepEqual(await layoutNames(page), ['Main', 'Layout 2', 'Main copy']);
+  assert.equal(await page.$$eval('#sourceList li', (lis) => lis.length), 2, 'the copy has the sources');
+  answers.push('Speedrun');
+  await layoutMenu(page, 'rename');
+  assert.equal(await page.textContent('#layoutName'), 'Speedrun');
+  await layoutMenu(page, 'delete');                     // confirm() accepted
+  assert.deepEqual(await layoutNames(page), ['Main', 'Layout 2']);
+
   await page.evaluate(() => window.studio.flush());
   await page.reload();
   await page.waitForTimeout(1200);
-  names = await page.$$eval('#layoutSelect option', (o) => o.map((x) => x.textContent));
-  assert.equal(names.length, 2);
-  await page.selectOption('#layoutSelect', { index: 0 });
-  await page.waitForTimeout(300);
+  assert.deepEqual(await layoutNames(page), ['Main', 'Layout 2']);
+  assert.equal(await page.textContent('#layoutName'), 'Main', 'the layout in use is remembered too');
+  assert.equal(await page.textContent('#saveState'), 'Saved');
+});
+
+test('layouts save across browsers: another one picks up changes, and a stale one merges instead of overwriting', { skip }, async () => {
+  // A second browser with its own cookies and storage: another device.
+  const other = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const b = await other.newPage();
+  b.on('pageerror', (e) => errors.push(`second browser: ${e.message}`));
+  b.on('dialog', answer);
+  await b.request.post(`${server.url}/api/login`, { data: { user: USER, password: PASSWORD }, headers: { Origin: server.url } });
+  await b.goto(`${server.url}/`);
+  await b.waitForTimeout(1200);
+  assert.deepEqual(await layoutNames(b), ['Main', 'Layout 2'], 'the same layouts on the other device');
+  const camOnA = await page.evaluate(() => window.studio.doc.layouts[0].sources.find((s) => s.type === 'camera'));
+  const camOnB = await b.evaluate(() => window.studio.doc.layouts[0].sources.find((s) => s.type === 'camera'));
+  assert.equal(camOnB.x, camOnA.x, 'with the same positions');
+
+  // A change here shows up there by itself, within the autosave interval.
+  answers.push('Main (desk)');
+  await layoutMenu(page, 'rename');
+  await b.waitForFunction(() => window.studio.doc.layouts[0].name === 'Main (desk)', null, { timeout: 12000 });
+  assert.equal(await b.textContent('#layoutName'), 'Main (desk)');
+
+  // Now B stops listening (hidden), A adds a layout, and B, still on the old
+  // copy, renames: B's save is refused, then merged, so both changes survive.
+  await b.evaluate(() => Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }));
+  await layoutMenu(page, 'new');                        // "Layout 3"
+  await page.evaluate(() => window.studio.flush());
+  answers.push('Main (laptop)');
+  await layoutMenu(b, 'rename');
+  await b.evaluate(() => window.studio.flush());
+  const saved = (await (await page.request.get(`${server.url}/api/state`)).json()).layouts;
+  assert.deepEqual(saved.layouts.map((l) => l.name), ['Main (laptop)', 'Layout 2', 'Layout 3']);
+  await page.evaluate(() => window.studio.pull());
+  assert.equal(await page.evaluate(() => window.studio.doc.layouts[0].name), 'Main (laptop)');
+  assert.equal(await page.textContent('#layoutName'), 'Layout 3', 'this window stays on its own layout');
+  await other.close();
+  await layoutMenu(page, 'delete');
+  await layoutMenu(page, 0);
+  await page.evaluate(() => window.studio.flush());
+});
+
+test('changes that could not be saved are kept in the browser and saved on the next visit', { skip }, async () => {
+  await page.route('**/api/layouts', (route) => (route.request().method() === 'PUT' ? route.abort() : route.continue()));
+  answers.push('Main');
+  await layoutMenu(page, 'rename');
+  await page.waitForFunction(() => document.getElementById('saveState').dataset.state === 'error');
+  assert.match(await page.textContent('#saveState'), /Not saved/);
+  await page.unroute('**/api/layouts');
+  errors.length = 0;                                    // the aborted saves above, on purpose
+  await page.reload();
+  await page.waitForTimeout(1500);
+  assert.equal(await page.textContent('#layoutName'), 'Main');
+  const saved = (await (await page.request.get(`${server.url}/api/state`)).json()).layouts;
+  assert.equal(saved.layouts[0].name, 'Main', 'and the server has it now');
+  assert.equal(await page.textContent('#saveState'), 'Saved');
 });
 
 test('the timer runs from its hotkey and splits import and export as .lss', { skip }, async () => {
@@ -198,8 +311,14 @@ test('the timer runs from its hotkey and splits import and export as .lss', { sk
   await page.waitForTimeout(500);
   assert.equal(await page.textContent('#timerGame'), 'Super Metroid');
 
-  await page.click('body');
-  await page.keyboard.press('Numpad1');
+  // Hotkeys are set in their own small popup.
+  await page.click('#hotkeysButton');
+  await page.click('#hotkey-split');
+  await page.keyboard.press('KeyS');
+  await page.click('#hotkeysDialog button.primary');
+  await page.waitForFunction(() => window.studio.doc.hotkeys.split === 'KeyS');
+  await page.click('.timer-clock');
+  await page.keyboard.press('KeyS');
   await page.waitForTimeout(1200);
   assert.notEqual(await page.textContent('#timerClock'), '0:00.00');
   assert.equal(await page.textContent('#timerSplit'), 'Split');
@@ -220,7 +339,7 @@ test('the timer runs from its hotkey and splits import and export as .lss', { sk
 });
 
 test('audio inputs appear in the mixer with a live meter', { skip }, async () => {
-  await page.click('#addAudio');
+  await addDevice(page, '#addAudio');
   await page.waitForTimeout(1500);
   const strips = await page.$$eval('#mixer .strip', (s) => s.length);
   assert.ok(strips >= 1, 'no mixer strip');
@@ -238,12 +357,18 @@ test('audio inputs appear in the mixer with a live meter', { skip }, async () =>
   assert.ok(moving, 'the meter never moved');
 });
 
-test('going live sends the stream to the server', { skip }, async () => {
-  await page.click('#settingsButton');
-  await page.fill('#setKey', 'live_123456_abcdefghij');
-  await page.click('#settingsSave');
+test('going live asks for the stream key, then sends the stream to Twitch\'s global ingest', { skip }, async () => {
+  await page.click('#streamButton');
+  await page.waitForSelector('#keyDialog[open]');
+  assert.deepEqual(await page.$$eval('#keyDialog input, #keyDialog button, #keyDialog select, #keyDialog textarea', (els) => els.map((e) => e.id || e.textContent)), ['streamKey', 'Save'],
+    'the key popup has one field and one button');
+  await page.fill('#streamKey', 'live_123456_abcdefghij');
+  await page.keyboard.press('Enter');
   await page.waitForTimeout(300);
-  assert.equal(await page.evaluate(() => document.getElementById('settingsDialog').open), false);
+  assert.equal(await page.evaluate(() => document.getElementById('keyDialog').open), false);
+  await page.click('#layoutButton');
+  assert.equal(await page.textContent('.menu [data-action=key]'), 'Twitch stream key ✓');
+  await page.keyboard.press('Escape');
   await page.click('#streamButton');
   await page.waitForTimeout(4500);
   assert.match(await page.textContent('#streamStatus'), /LIVE/);
@@ -251,7 +376,7 @@ test('going live sends the stream to the server', { skip }, async () => {
   await page.waitForTimeout(800);
   assert.equal(await page.textContent('#streamStatus'), 'Offline');
   const args = readFileSync(join(server.data, 'args.txt'), 'utf8');
-  assert.match(args, /live_123456_abcdefghij/);
+  assert.match(args, /^rtmp:\/\/ingest\.global-contribute\.live-video\.net\/app\/live_123456_abcdefghij$/m);
   const bytes = readFileSync(join(server.data, 'stdin.bin'));
   assert.ok(bytes.length > 20000, `only ${bytes.length} bytes reached ffmpeg`);
   assert.ok(bytes.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3])), 'not WebM');
@@ -262,8 +387,7 @@ test('frames keep coming when the window is hidden', { skip }, async () => {
   // clock must take over. Headless Chromium does not throttle for real, so this
   // checks the hand-over: animation frames stop, worker frames continue.
   // On the empty layout, so software rendering in CI does not set the pace.
-  await page.selectOption('#layoutSelect', { index: 1 });
-  await page.waitForTimeout(300);
+  await layoutMenu(page, 1);
   const result = await page.evaluate(async () => {
     const c = window.studio.compositor;
     const original = c.frame.bind(c);
@@ -317,7 +441,7 @@ test('a slow frame while hidden lowers the frame rate instead of piling up', { s
   });
   assert.ok(result.elapsed < 1500, `a one-second wait took ${result.elapsed} ms: the page was backed up`);
   assert.ok(result.frames <= 20, `${result.frames} frames of 60 ms in about a second is not possible without a backlog`);
-  await page.selectOption('#layoutSelect', { index: 0 });
+  await layoutMenu(page, 0);
 });
 
 test('no errors in the console', { skip }, () => {
