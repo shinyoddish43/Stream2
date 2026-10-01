@@ -24,6 +24,9 @@
  * The header is believed only from TRUST_PROXY or loopback, and the proxy must
  * drop any copy of it the browser sends. The password login keeps working.
  *
+ * Twitch's addresses, for tests that stand in for Twitch:
+ *   TWITCH_AUTH_URL=https://id.twitch.tv/oauth2  TWITCH_API_URL=https://api.twitch.tv/helix
+ *
  * A hub dashboard with a "Go live" button (the six7 hub):
  *   HUB_ORIGIN=https://sylveon.six7.pw   the one page origin whose messages may
  *   start a stream in an open studio window (see public/app.js); unset: off.
@@ -248,8 +251,10 @@ function recordFailure(ip) {
 
 function securityHeaders(res) {
   res.setHeader('Content-Security-Policy', [
-    "default-src 'self'", "script-src 'self'", "style-src 'self'", "img-src 'self' data: blob:",
-    "media-src 'self' blob:", "connect-src 'self'", "object-src 'none'", "base-uri 'none'",
+    "default-src 'self'", "script-src 'self'", "style-src 'self'",
+    // Twitch chat (public/chat.js): its server, and its emote pictures.
+    "img-src 'self' data: blob: https://static-cdn.jtvnw.net",
+    "media-src 'self' blob:", "connect-src 'self' wss://irc-ws.chat.twitch.tv", "object-src 'none'", "base-uri 'none'",
     "frame-ancestors 'none'", "form-action 'self'",
   ].join('; '));
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -310,7 +315,7 @@ const ingestOf = (s) => (!s.ingest || s.ingest === LEGACY_INGEST ? DEFAULT_INGES
 
 function publicSettings() {
   const s = readJson('settings.json', {});
-  return { ingest: ingestOf(s), hasKey: !!s.streamKey, testMode: !!s.testMode, hubOrigin: HUB_ORIGIN };
+  return { ingest: ingestOf(s), hasKey: !!s.streamKey, testMode: !!s.testMode, hubOrigin: HUB_ORIGIN, twitch: twitchStatus(s) };
 }
 
 // Remove uploads no layout refers to any more. The grace period keeps a file
@@ -434,8 +439,43 @@ async function route(req, res) {
     }
     if (body.clearKey) delete s.streamKey;
     if (body.testMode !== undefined) s.testMode = !!body.testMode;
+    // The studio's Twitch app, for the chat. Its secret, like the key, never goes back.
+    if (body.twitchClientId !== undefined) {
+      const id = String(body.twitchClientId).trim();
+      const secret = String(body.twitchClientSecret || '').trim();
+      if (!/^[A-Za-z0-9]{20,64}$/.test(id)) throw fail(400, 'That does not look like a Twitch Client ID: copy it from the app’s page on dev.twitch.tv.');
+      if (secret && !/^[A-Za-z0-9]{20,64}$/.test(secret)) throw fail(400, 'That does not look like a Twitch client secret.');
+      const sameApp = !!s.twitchApp && s.twitchApp.clientId === id;
+      if (!sameApp) {
+        // A sign-in belongs to the app it was made with.
+        stopSignIn();
+        if (s.twitchUser && s.twitchUser.access && s.twitchApp) revoke(s.twitchUser.access, s.twitchApp.clientId);
+        delete s.twitchUser;
+        chatAssets = null;
+        twitchProblem = '';
+      }
+      // The same app saved again without its secret keeps the one it has.
+      const clientSecret = secret || (sameApp && s.twitchApp.clientSecret) || '';
+      s.twitchApp = clientSecret ? { clientId: id, clientSecret } : { clientId: id };
+    }
     writeJson('settings.json', s);
     send(res, 200, { ok: true, settings: publicSettings() });
+    return;
+  }
+
+  if (p === '/api/settings' && method === 'GET') { send(res, 200, publicSettings()); return; }
+
+  if (p === '/api/twitch/signin' && method === 'POST') { await startSignIn(); send(res, 200, publicSettings()); return; }
+  if (p === '/api/twitch/signin' && method === 'DELETE') { stopSignIn(); send(res, 200, publicSettings()); return; }
+  if (p === '/api/twitch/signout' && method === 'POST') { signOut(); send(res, 200, publicSettings()); return; }
+  if (p === '/api/chat/assets' && method === 'GET') { send(res, 200, await loadChatAssets()); return; }
+
+  if (p === '/api/chat' && method === 'POST') {
+    const body = await readJsonBody(req, 8192);
+    const message = body && typeof body.message === 'string' ? body.message.trim() : '';
+    if (!message) throw fail(400, 'Type a message first.');
+    if ([...message].length > 500) throw fail(400, 'Twitch takes at most 500 characters.');
+    send(res, 200, await sendChat(message));
     return;
   }
 
@@ -463,6 +503,255 @@ async function route(req, res) {
   }
 
   throw fail(404, 'not found');
+}
+
+// ----------------------------------------------------------- Twitch chat
+//
+// The page reads the chat straight from Twitch's chat server, signed out, but
+// only the channel of the account the stream key streams to. Writing in it
+// takes a sign-in: the studio's own Twitch app (its Client ID, pasted in the
+// page) signs the owner in with Twitch's device code flow, and what they type
+// goes out through the Twitch API as that account. Tokens stay on the server,
+// like the stream key.
+
+const TWITCH_AUTH = String(process.env.TWITCH_AUTH_URL || 'https://id.twitch.tv/oauth2').replace(/\/+$/, '');
+const TWITCH_API = String(process.env.TWITCH_API_URL || 'https://api.twitch.tv/helix').replace(/\/+$/, '');
+const TWITCH_SCOPES = 'user:write:chat';
+const TWITCH_CDN = 'https://static-cdn.jtvnw.net/';
+
+let signIn = null;          // the device code sign-in waiting for the owner on twitch.tv/activate
+let twitchProblem = '';     // what went wrong last, for the page
+let chatAssets = null;      // global emotes and badges: { at, account, failed, data }
+let refreshing = null;      // the token refresh in flight: one at a time, the refresh token is single use
+
+// Twitch stream keys look like live_<account id>_<secret>.
+const keyAccount = (key) => (/^live_(\d+)_/.exec(String(key || '')) || [])[1] || null;
+
+async function twitchCall(url, { method = 'GET', token, clientId, form, json } = {}) {
+  const headers = {};
+  if (clientId) headers['Client-Id'] = clientId;
+  if (token) headers.Authorization = `Bearer ${token}`;
+  let body;
+  if (form) { headers['Content-Type'] = 'application/x-www-form-urlencoded'; body = new URLSearchParams(form).toString(); }
+  if (json) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(json); }
+  let res;
+  try { res = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(15000) }); } catch { throw fail(502, 'Could not reach Twitch.'); }
+  const data = await res.json().catch(() => ({}));
+  return { status: res.status, ok: res.ok, data: data && typeof data === 'object' ? data : {} };
+}
+
+const twitchSaid = (res, what) => `${what}${res.data.message ? `: ${res.data.message}` : ` (${res.status})`}.`;
+
+function twitchStatus(s) {
+  const user = s.twitchUser;
+  return {
+    app: !!(s.twitchApp && s.twitchApp.clientId),
+    clientId: (s.twitchApp && s.twitchApp.clientId) || '',
+    account: user ? { id: user.id, login: user.login, name: user.name } : null,
+    canWrite: !!(user && user.refresh),
+    keyAccount: keyAccount(s.streamKey),
+    pending: signIn ? { code: signIn.code, url: signIn.url, expires: signIn.expires } : null,
+    problem: twitchProblem,
+  };
+}
+
+function stopSignIn() {
+  if (signIn) clearTimeout(signIn.timer);
+  signIn = null;
+}
+
+async function startSignIn() {
+  const app = readJson('settings.json', {}).twitchApp;
+  if (!app || !app.clientId) throw fail(409, 'Add the Twitch app’s Client ID first.');
+  stopSignIn();
+  const res = await twitchCall(`${TWITCH_AUTH}/device`, { method: 'POST', form: { client_id: app.clientId, scopes: TWITCH_SCOPES } });
+  if (!res.ok || !res.data.device_code) throw fail(502, twitchSaid(res, 'Twitch did not start the sign-in. Check the app’s Client ID'));
+  const d = res.data;
+  signIn = {
+    code: String(d.user_code || ''),
+    // The address fills the code in. Only ever a twitch.tv page.
+    url: /^https:\/\/(www\.)?twitch\.tv\//.test(d.verification_uri) ? d.verification_uri : 'https://www.twitch.tv/activate',
+    expires: Date.now() + (Number(d.expires_in) || 1800) * 1000,
+    device: d.device_code,
+    interval: Math.max(100, (Number(d.interval) || 5) * 1000),
+  };
+  twitchProblem = '';
+  waitForSignIn(signIn);
+}
+
+// Ask Twitch every few seconds whether the owner has approved the sign-in yet.
+function waitForSignIn(flow) {
+  flow.timer = setTimeout(async () => {
+    if (signIn !== flow) return;
+    if (Date.now() > flow.expires) { stopSignIn(); twitchProblem = 'The sign-in code expired. Sign in again.'; return; }
+    const app = readJson('settings.json', {}).twitchApp || {};
+    const form = { client_id: app.clientId, scopes: TWITCH_SCOPES, device_code: flow.device, grant_type: 'urn:ietf:params:oauth:grant-type:device_code' };
+    if (app.clientSecret) form.client_secret = app.clientSecret;
+    let res;
+    try { res = await twitchCall(`${TWITCH_AUTH}/token`, { method: 'POST', form }); } catch { if (signIn === flow) waitForSignIn(flow); return; }
+    if (signIn !== flow) return;
+    const message = String(res.data.message || '');
+    if (res.ok && res.data.access_token) {
+      stopSignIn();
+      try { await keepSignIn(res.data, app); } catch (e) { twitchProblem = e.message; }
+    } else if (/authorization_pending/i.test(message)) {
+      waitForSignIn(flow);
+    } else if (/slow_down/i.test(message)) {
+      flow.interval += 5000;
+      waitForSignIn(flow);
+    } else {
+      stopSignIn();
+      twitchProblem = /denied/i.test(message) ? 'The sign-in was declined on Twitch.' : twitchSaid(res, 'Twitch did not finish the sign-in');
+    }
+  }, flow.interval);
+}
+
+async function keepSignIn(tokens, app) {
+  const v = await twitchCall(`${TWITCH_AUTH}/validate`, { token: tokens.access_token });
+  if (!v.ok || !v.data.user_id) throw fail(502, 'Twitch signed in but did not say which account. Sign in again.');
+  let name = v.data.login;
+  const u = await twitchCall(`${TWITCH_API}/users?id=${encodeURIComponent(v.data.user_id)}`, { token: tokens.access_token, clientId: app.clientId }).catch(() => null);
+  if (u && u.ok && Array.isArray(u.data.data) && u.data.data[0]) name = u.data.data[0].display_name || name;
+  const s = readJson('settings.json', {});
+  if (!s.twitchApp || s.twitchApp.clientId !== app.clientId) { revoke(tokens.access_token, app.clientId); return; }   // the app changed meanwhile
+  if (s.twitchUser && s.twitchUser.access) revoke(s.twitchUser.access, app.clientId);
+  s.twitchUser = {
+    id: String(v.data.user_id), login: String(v.data.login), name: String(name),
+    access: tokens.access_token, refresh: tokens.refresh_token, expires: Date.now() + (Number(tokens.expires_in) || 3600) * 1000,
+  };
+  writeJson('settings.json', s);
+  twitchProblem = '';
+  chatAssets = null;
+}
+
+function revoke(token, clientId) {
+  twitchCall(`${TWITCH_AUTH}/revoke`, { method: 'POST', form: { client_id: clientId, token } }).catch(() => { /* it expires anyway */ });
+}
+
+// Keep the account (the chat still shows) but drop what lets the studio write.
+function forgetTokens(problem) {
+  const s = readJson('settings.json', {});
+  if (!s.twitchUser) return;
+  s.twitchUser.access = null;
+  s.twitchUser.refresh = null;
+  writeJson('settings.json', s);
+  twitchProblem = problem;
+}
+
+function signOut() {
+  stopSignIn();
+  const s = readJson('settings.json', {});
+  if (s.twitchUser && s.twitchUser.access && s.twitchApp) revoke(s.twitchUser.access, s.twitchApp.clientId);
+  delete s.twitchUser;
+  writeJson('settings.json', s);
+  twitchProblem = '';
+  chatAssets = null;
+}
+
+/** A working access token; refreshed first when it is about to run out, or when `force`. */
+function accessToken(force = false) {
+  const user = readJson('settings.json', {}).twitchUser;
+  if (!user || !user.refresh) return Promise.reject(fail(409, 'Sign in with Twitch to write in the chat.'));
+  if (!force && user.access && user.expires - Date.now() > 60e3) return Promise.resolve(user.access);
+  if (!refreshing) refreshing = refreshTokens().finally(() => { refreshing = null; });
+  return refreshing;
+}
+
+async function refreshTokens() {
+  const s = readJson('settings.json', {});
+  const app = s.twitchApp || {};
+  const user = s.twitchUser;
+  const form = { client_id: app.clientId, grant_type: 'refresh_token', refresh_token: user.refresh };
+  if (app.clientSecret) form.client_secret = app.clientSecret;
+  const res = await twitchCall(`${TWITCH_AUTH}/token`, { method: 'POST', form });
+  if (!res.ok || !res.data.access_token) {
+    // Revoked, or (a Public app's) not used for 30 days: only a new sign-in helps.
+    if (res.status === 400 || res.status === 401) forgetTokens('Twitch ended the studio’s sign-in. Sign in again to write in the chat.');
+    throw fail(502, twitchSaid(res, 'Twitch did not renew the sign-in'));
+  }
+  const now = readJson('settings.json', {});
+  if (!now.twitchUser || now.twitchUser.id !== user.id) throw fail(409, 'Signed out of Twitch meanwhile.');
+  Object.assign(now.twitchUser, {
+    access: res.data.access_token,
+    refresh: res.data.refresh_token || user.refresh,
+    expires: Date.now() + (Number(res.data.expires_in) || 3600) * 1000,
+  });
+  writeJson('settings.json', now);
+  return now.twitchUser.access;
+}
+
+// Twitch asks apps to check their tokens when they start and every hour. It
+// also renews the token well before its four hours are up, which keeps a
+// Public app's sign-in (its refresh token lasts 30 days) alive indefinitely,
+// and follows a renamed account.
+async function checkTwitch() {
+  const user = readJson('settings.json', {}).twitchUser;
+  if (!user || !user.refresh) return;
+  try {
+    let v = user.access ? await twitchCall(`${TWITCH_AUTH}/validate`, { token: user.access }) : { status: 401, ok: false, data: {} };
+    if (v.status === 401 || (v.ok && Number(v.data.expires_in) < 2 * 3600)) v = await twitchCall(`${TWITCH_AUTH}/validate`, { token: await accessToken(true) });
+    const before = readJson('settings.json', {}).twitchUser;
+    if (!v.ok || !v.data.login || !before || before.id !== String(v.data.user_id) || before.login === v.data.login) return;
+    const app = readJson('settings.json', {}).twitchApp || {};
+    const u = await twitchCall(`${TWITCH_API}/users?id=${encodeURIComponent(before.id)}`, { token: await accessToken(), clientId: app.clientId });
+    const s = readJson('settings.json', {});
+    if (!s.twitchUser || s.twitchUser.id !== before.id) return;
+    s.twitchUser.login = String(v.data.login);
+    s.twitchUser.name = String((u.ok && Array.isArray(u.data.data) && u.data.data[0] && u.data.data[0].display_name) || v.data.login);
+    writeJson('settings.json', s);
+  } catch { /* Twitch unreachable: next hour */ }
+}
+
+/** Twitch's global emotes, and the global and this channel's badges: only those show as pictures. */
+async function loadChatAssets() {
+  const s = readJson('settings.json', {});
+  const user = s.twitchUser;
+  const empty = { emotes: {}, badges: {} };
+  if (!user || !s.twitchApp) return empty;
+  const fresh = chatAssets && chatAssets.account === user.id && Date.now() - chatAssets.at < (chatAssets.failed ? 5 * 60e3 : 12 * 3600e3);
+  if (fresh) return chatAssets.data;
+  const data = { emotes: {}, badges: {} };
+  let failed = true;
+  try {
+    const token = await accessToken();
+    const get = (p) => twitchCall(`${TWITCH_API}${p}`, { token, clientId: s.twitchApp.clientId });
+    const [emotes, global, channel] = await Promise.all([
+      get('/chat/emotes/global'), get('/chat/badges/global'), get(`/chat/badges?broadcaster_id=${encodeURIComponent(user.id)}`),
+    ]);
+    for (const e of Array.isArray(emotes.data.data) ? emotes.data.data : []) {
+      if (/^[A-Za-z0-9_]+$/.test(String(e.id)) && typeof e.name === 'string') data.emotes[e.id] = e.name;
+    }
+    // The channel's own badges (its subscriber badges, say) replace the global ones.
+    for (const set of [global, channel].flatMap((r) => (Array.isArray(r.data.data) ? r.data.data : []))) {
+      for (const v of Array.isArray(set.versions) ? set.versions : []) {
+        const x1 = String(v.image_url_1x || '');
+        const x2 = String(v.image_url_2x || '');
+        if (!x1.startsWith(TWITCH_CDN)) continue;
+        data.badges[`${set.set_id}/${v.id}`] = { title: String(v.title || set.set_id), x1, x2: x2.startsWith(TWITCH_CDN) ? x2 : x1 };
+      }
+    }
+    failed = !emotes.ok || !global.ok;
+  } catch { /* shown as text until the next try */ }
+  chatAssets = { at: Date.now(), account: user.id, failed, data };
+  return data;
+}
+
+async function sendChat(message) {
+  const s = readJson('settings.json', {});
+  const user = s.twitchUser;
+  if (!user || !user.refresh) throw fail(409, 'Sign in with Twitch to write in the chat.');
+  if (keyAccount(s.streamKey) !== user.id) throw fail(409, 'The chat is the stream key’s account, and you are signed in with another one.');
+  const clientId = (s.twitchApp || {}).clientId;
+  const post = async (token) => twitchCall(`${TWITCH_API}/chat/messages`, { method: 'POST', token, clientId, json: { broadcaster_id: user.id, sender_id: user.id, message } });
+  let res = await post(await accessToken());
+  if (res.status === 401) res = await post(await accessToken(true));
+  if (res.ok) {
+    const d = (Array.isArray(res.data.data) && res.data.data[0]) || {};
+    if (d.is_sent) return { sent: true };
+    return { sent: false, reason: String((d.drop_reason && (d.drop_reason.message || d.drop_reason.code)) || 'Twitch did not send it.') };
+  }
+  if (res.status === 429) throw fail(429, 'Twitch says that is too many messages for now. Wait a moment.');
+  throw fail(502, twitchSaid(res, 'Twitch did not take the message'));
 }
 
 // ------------------------------------------------------------ the relay
@@ -582,6 +871,8 @@ function start() {
     console.error(e.code === 'EADDRINUSE' ? `Port ${PORT} is already in use.` : e.message);
     process.exit(1);
   });
+  checkTwitch();
+  setInterval(checkTwitch, 3600e3).unref();
   const sso = AUTH_HEADER ? `, sign-in: ${AUTH_HEADER}` : '';
   server.listen(PORT, HOST, () => console.log(`Stream Studio on http://${HOST}:${PORT}  (data: ${DATA}, video: ${VIDEO_MODE}${sso})`));
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { wss.clients.forEach((c) => c.close()); server.close(); process.exit(0); });

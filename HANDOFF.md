@@ -131,6 +131,39 @@ CI 63/63.
   first computer that opens them. The Sources and Audio boxes size to
   their contents and grow as things are added. CI 65/65.
 
+## September 30: Twitch chat
+
+- A Chat panel under Audio takes the rest of the column. The page reads the
+  chat straight from Twitch's chat server (`wss://irc-ws.chat.twitch.tv`,
+  signed out as `justinfan…`; `public/chat.js`), and only the channel of the
+  account the stream key streams to (keys are `live_<account id>_…`).
+- Writing in it: the studio's own Twitch app (Client ID pasted in the chat
+  panel, stored in `settings.json`; a secret only for a Confidential app,
+  never sent back) signs the owner in with Twitch's device code flow (a code
+  on twitch.tv/activate, scope `user:write:chat` only). Tokens stay in
+  `settings.json`; messages go out through Helix `POST /chat/messages` as that
+  account, and show when Twitch sends them round. The server checks the token
+  on start and hourly (Twitch requires it), renews it two hours before it
+  runs out (a Public app's refresh token lasts 30 days, so this keeps it
+  alive) and follows a renamed account.
+- The chat shows Twitch's badges (global, and the channel's own sub badges) as
+  pictures, and only Twitch's **global** emotes as pictures: a channel's own
+  emotes and BTTV/7TV ones show as their names, as the owner asked.
+- CSP: `connect-src` adds `wss://irc-ws.chat.twitch.tv`, `img-src`
+  `https://static-cdn.jtvnw.net`. A global `[hidden]{display:none!important}`
+  rule: `.row{display:flex}` used to beat the `hidden` attribute.
+- Tests: `test/chat.test.mjs`, `test/fake-twitch.mjs` (stand-in for Twitch's
+  sign-in and API servers; `TWITCH_AUTH_URL`/`TWITCH_API_URL` point the server
+  at it), and browser tests with Playwright's `routeWebSocket` as the chat
+  server. 85/85 locally under Playwright 1.49; the browser file also passes
+  under 1.62.
+- Checked against real Twitch: reading a busy channel (messages, an emote, no
+  CSP violations, real Chromium); a channel that does not exist gets no reply
+  at all (hence the 10 s "channel not found"); an unknown Client ID gets
+  `{"status":400,"message":"invalid client"}` from `/oauth2/device`.
+- **Owner step:** create the Twitch app (the chat panel lists the steps), paste
+  its Client ID, sign in with the account you stream from.
+
 ## Not done
 
 - **Not yet done by a person:** signing in to the studio as the owner (the

@@ -121,6 +121,15 @@ test('the Twitch server is the global ingest, and the old address moves to it', 
   fresh.stop();
 });
 
+test('the page may reach Twitch chat and its emotes, and nothing else outside the studio', async () => {
+  const csp = (await fetch(`${server.url}/login`)).headers.get('content-security-policy');
+  const directive = (name) => csp.split(';').map((d) => d.trim()).find((d) => d.split(' ')[0] === name);
+  assert.equal(directive('connect-src'), "connect-src 'self' wss://irc-ws.chat.twitch.tv");
+  assert.equal(directive('img-src'), "img-src 'self' data: blob: https://static-cdn.jtvnw.net");
+  assert.equal(directive('script-src'), "script-src 'self'");
+  assert.equal(directive('default-src'), "default-src 'self'");
+});
+
 test('the stream key is stored but never sent back', async () => {
   let res = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ streamKey: 'live_123456_abcdefSECRET', ingest: 'rtmp://live.twitch.tv/app' }) });
   assert.equal(res.status, 200);

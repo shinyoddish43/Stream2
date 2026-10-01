@@ -7,17 +7,19 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { startServer, USER, PASSWORD } from './helpers.mjs';
+import { fakeTwitch, CLIENT_ID, CDN } from './fake-twitch.mjs';
 
 let chromium;
 try { ({ chromium } = await import(process.env.PLAYWRIGHT_PATH || 'playwright')); } catch { /* skipped below */ }
 const skip = !chromium && 'playwright is not installed';
 
-let server, browser, context, page;
+let server, browser, context, page, twitch;
 const errors = [];
 
 before(async () => {
   if (skip) return;
-  server = await startServer();
+  twitch = await fakeTwitch();
+  server = await startServer(twitch.env);
   browser = await chromium.launch({
     executablePath: process.env.CHROMIUM_PATH === '' ? undefined : (process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium'),
     args: ['--no-sandbox', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'],
@@ -58,7 +60,7 @@ before(async () => {
 const answers = [];
 const answer = (d) => d.accept(answers.length ? answers.shift() : d.defaultValue() || undefined);
 
-after(async () => { if (browser) await browser.close(); if (server) server.stop(); });
+after(async () => { if (browser) await browser.close(); if (server) server.stop(); if (twitch) twitch.close(); });
 
 // Open the layout menu and pick an entry: a layout by position, or an action.
 async function layoutMenu(p, pick) {
@@ -592,6 +594,212 @@ test('a slow frame while hidden lowers the frame rate instead of piling up', { s
   assert.ok(result.elapsed < 1500, `a one-second wait took ${result.elapsed} ms: the page was backed up`);
   assert.ok(result.frames <= 20, `${result.frames} frames of 60 ms in about a second is not possible without a backlog`);
   await layoutMenu(page, 0);
+});
+
+// Twitch's chat server, played by the test: it says what Twitch says to a
+// signed-out viewer, and whatever the test sends after that. Twitch's sign-in
+// and API servers are fake-twitch.mjs, which the studio's server talks to.
+const ircHeard = [];
+let irc = null;
+// A 1x1 PNG standing in for emote and badge pictures.
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+const say = (line) => irc.send(line);
+const privmsg = (tags, nick, text) => say(`@${tags} :${nick}!${nick}@${nick}.tmi.twitch.tv PRIVMSG #oddish :${text}`);
+const chatLines = () => page.$$eval('#chatLog li', (lis) => lis.map((li) => li.textContent));
+const joins = () => ircHeard.filter((l) => l === 'JOIN #oddish').length;
+async function eventually(fn, timeout = 10000) {
+  const end = Date.now() + timeout;
+  while (!(await fn())) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${fn}`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+async function replaceKey(key) {
+  await layoutMenu(page, 'key');
+  await page.fill('#streamKey', key);
+  await page.keyboard.press('Enter');
+  await until(page, () => !document.getElementById('keyDialog').open);
+}
+
+test('Twitch chat: set up once, sign in with the account you stream from, read it with badges and emotes', { skip }, async () => {
+  await context.route(`${CDN}/**`, (route) => route.fulfill({ contentType: 'image/png', body: PNG }));
+  await context.routeWebSocket(/irc-ws\.chat\.twitch\.tv/, (ws) => {
+    irc = ws;
+    ws.onMessage((data) => {
+      const line = String(data);
+      ircHeard.push(line);
+      if (line.startsWith('NICK ')) ws.send(`:tmi.twitch.tv 001 ${line.slice(5)} :Welcome, GLHF!`);
+      const join = /^JOIN (#\w+)$/.exec(line);
+      if (join) ws.send(`@room-id=123456;slow=0 :tmi.twitch.tv ROOMSTATE ${join[1]}`);
+    });
+  });
+  await page.reload();
+  await page.waitForSelector('#chatAppForm:not([hidden])');
+
+  // Setting up: every step can be reached, and the page itself does not scroll.
+  const setup = await page.evaluate(() => {
+    const save = document.querySelector('#chatAppForm button.primary');
+    save.scrollIntoView();
+    const r = save.getBoundingClientRect();
+    return { visible: r.bottom <= innerHeight && r.top >= 0, scroll: [document.documentElement.scrollWidth - innerWidth, document.documentElement.scrollHeight - innerHeight] };
+  });
+  assert.ok(setup.visible, 'Save can be reached');
+  assert.deepEqual(setup.scroll, [0, 0]);
+  assert.equal(irc, null, 'no Twitch app, no account: nothing connects');
+
+  // Once: the studio's own Twitch app.
+  await page.fill('#chatClientId', 'not an id');
+  await page.keyboard.press('Enter');
+  assert.match(await page.$eval('#chatClientId', (i) => i.validationMessage), /Client ID/);
+  await page.fill('#chatClientId', CLIENT_ID);
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('#chatStepButtons button:has-text("Sign in with Twitch")');
+  assert.equal(await page.isHidden('#chatAppForm'), true);
+
+  // Sign in: a code to check on twitch.tv/activate; the page carries on by itself.
+  twitch.pending = true;
+  await page.click('#chatStepButtons button:has-text("Sign in with Twitch")');
+  await page.waitForSelector('#chatStepText .code');
+  assert.equal(await page.textContent('#chatStepText .code'), 'ABCD-EFGH');
+  assert.equal(await page.getAttribute('#chatStepButtons a', 'href'), 'https://www.twitch.tv/activate?public=true&device-code=ABCDEFGH');
+  assert.equal(irc, null, 'still nothing until Twitch says who');
+  twitch.pending = false;
+  // The stream key saved when going live (live_123456_…) is this account's.
+  await page.waitForSelector('#chatSend:not([hidden])');
+  await eventually(() => joins() === 1);
+  await until(page, () => !document.getElementById('chatState').textContent);
+  assert.match(ircHeard.find((l) => l.startsWith('NICK')), /^NICK justinfan\d+$/, 'the page reads the chat signed out: no token in the browser');
+  assert.equal(ircHeard.filter((l) => /^(PRIVMSG|PASS oauth)/.test(l)).length, 0);
+  assert.equal(await page.textContent('#chatChannel'), '#oddish');
+  assert.equal(await page.isHidden('#chatSetup'), true);
+
+  const box = await page.evaluate(() => {
+    const r = (sel) => document.querySelector(sel).getBoundingClientRect();
+    const panels = [...document.querySelectorAll('.side > .panel')];
+    return {
+      last: panels.at(-1).classList.contains('chat-panel'),
+      afterAudio: panels.indexOf(document.querySelector('.chat-panel')) === panels.indexOf(document.querySelector('.audio-panel')) + 1,
+      chatTop: r('.chat-panel').top, audioBottom: r('.audio-panel').bottom, chatBottom: r('.chat-panel').bottom,
+      sideBottom: r('.side').bottom, chatHeight: r('.chat-panel').height,
+      scroll: [document.documentElement.scrollWidth - innerWidth, document.documentElement.scrollHeight - innerHeight],
+    };
+  });
+  assert.ok(box.last && box.afterAudio && box.chatTop > box.audioBottom, `the chat comes right after the audio: ${JSON.stringify(box)}`);
+  assert.ok(Math.abs(box.sideBottom - box.chatBottom) <= 1 && box.chatHeight >= 150, `the chat takes the rest of the column: ${JSON.stringify(box)}`);
+  assert.deepEqual(box.scroll, [0, 0], 'the page still does not scroll');
+
+  // Badges as pictures (the channel's own sub badge), Twitch's global emotes as
+  // pictures, a channel's own emote as its name.
+  privmsg('badges=moderator/1,subscriber/0,glitchcon2020/1;color=#0000FF;display-name=Fan;emotes=25:8-12/emotesv2_chan:14-23;id=m1;first-msg=1',
+    'fan', 'hello 👋 Kappa oddishWave <b>not bold</b>');
+  privmsg('badges=broadcaster/1;color=;display-name=Waver;emotes=;id=m2', 'waver', '\x01ACTION waves at @Oddish\x01');
+  await until(page, () => document.querySelectorAll('#chatLog li').length === 2);
+  const first = await page.$eval('#chatLog li', (li) => ({
+    text: li.textContent, html: li.querySelector('span:last-child').innerHTML.includes('<b>'), first: li.classList.contains('first'),
+    color: getComputedStyle(li.querySelector('.who')).color,
+    badges: [...li.querySelectorAll('img.badge')].map((i) => [i.src, i.alt]),
+    emotes: [...li.querySelectorAll('img.emote')].map((i) => [i.src, i.alt]),
+  }));
+  assert.equal(first.text, 'Fan: hello 👋  oddishWave <b>not bold</b>');
+  assert.equal(first.html, false, 'markup in a message is just text');
+  assert.deepEqual(first.badges, [[`${CDN}/badges/v1/mod/1`, 'Moderator'], [`${CDN}/badges/v1/oddishsub/1`, 'Oddish Subscriber']]);
+  assert.deepEqual(first.emotes, [[`${CDN}/emoticons/v2/25/default/dark/1.0`, 'Kappa']]);
+  assert.ok(first.first, 'a first message is marked');
+  assert.notEqual(first.color, 'rgb(0, 0, 255)', 'pure blue is lightened to read on the dark panel');
+  await until(page, () => [...document.querySelectorAll('#chatLog img')].every((i) => i.complete && i.naturalWidth > 0));
+  const action = await page.$eval('#chatLog li:nth-child(2)', (li) => ({ text: li.textContent, action: li.classList.contains('action'), mention: li.classList.contains('mention') }));
+  assert.deepEqual(action, { text: 'streamerWaver waves at @Oddish', action: true, mention: true }, 'a badge with no picture in Twitch’s list still shows in words');
+
+  // Moderators: one message deleted, then everything from one person.
+  say('@login=fan;target-msg-id=m1 :tmi.twitch.tv CLEARMSG #oddish :hello');
+  await until(page, () => document.querySelectorAll('#chatLog li').length === 1);
+  privmsg('id=m3', 'troll', 'spam');
+  privmsg('id=m4', 'troll', 'more spam');
+  say('@login=raider;msg-id=raid;system-msg=12\\sraiders\\sfrom\\sRaider\\shave\\sjoined! :tmi.twitch.tv USERNOTICE #oddish');
+  await until(page, () => document.querySelectorAll('#chatLog li').length === 4);
+  say('@ban-duration=600 :tmi.twitch.tv CLEARCHAT #oddish :troll');
+  await until(page, () => document.querySelectorAll('#chatLog li').length === 2);
+  assert.deepEqual(await chatLines(), ['streamerWaver waves at @Oddish', '12 raiders from Raider have joined!']);
+
+  // A busy chat: the newest 300 messages, following the newest one.
+  for (let i = 0; i < 320; i++) privmsg(`id=n${i}`, 'busy', `message ${i}`);
+  await until(page, () => document.querySelector('#chatLog').lastElementChild.textContent === 'busy: message 319');
+  const log = () => page.$eval('#chatLog', (l) => ({ count: l.children.length, first: l.firstElementChild.textContent, gap: l.scrollHeight - l.scrollTop - l.clientHeight }));
+  let now = await log();
+  assert.deepEqual([now.count, now.first], [300, 'busy: message 20']);
+  assert.ok(now.gap < 2, `the newest message is in view: ${now.gap}px below`);
+  // Scrolled up to read: it stays put and offers a way back down.
+  await page.$eval('#chatLog', (l) => { l.scrollTop = 0; });
+  await page.waitForTimeout(100);
+  privmsg('id=late', 'busy', 'one more');
+  await page.waitForSelector('#chatMore:not([hidden])');
+  now = await log();
+  assert.ok(now.gap > 100, 'the chat did not jump down while being read');
+  await page.click('#chatMore');
+  now = await log();
+  assert.ok(now.gap < 2 && await page.isHidden('#chatMore'), 'back to the newest message');
+
+  // Twitch restarting its server: the chat moves to a new connection.
+  say(':tmi.twitch.tv RECONNECT');
+  await eventually(() => joins() === 2);
+});
+
+test('Twitch chat: writing in it goes out as the account, and what Twitch drops says why', { skip }, async () => {
+  await page.fill('#chatText', 'thanks for watching Kappa');
+  await page.keyboard.press('Enter');
+  await eventually(() => twitch.sent.length === 1);
+  assert.deepEqual(twitch.sent[0], { broadcaster_id: '123456', sender_id: '123456', message: 'thanks for watching Kappa' });
+  await until(page, () => document.getElementById('chatText').value === '');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'chatText', 'ready for the next one');
+  assert.equal(ircHeard.filter((l) => l.startsWith('PRIVMSG')).length, 0, 'sent by the server, not by the page');
+  // Twitch sends it round to everyone, the studio included.
+  privmsg('badges=broadcaster/1;display-name=Oddish;emotes=25:20-24;id=mine', 'oddish', 'thanks for watching Kappa');
+  await until(page, () => document.querySelector('#chatLog').lastElementChild.textContent === 'streamerOddish: thanks for watching ');
+
+  twitch.drop = { code: 'msg_duplicate', message: 'Your message is identical to the one you sent less than 30 seconds ago.' };
+  await page.fill('#chatText', 'thanks for watching Kappa');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('#chatError:not([hidden])');
+  assert.equal(await page.textContent('#chatError'), 'Not sent: Your message is identical to the one you sent less than 30 seconds ago.');
+  assert.equal(await page.inputValue('#chatText'), 'thanks for watching Kappa', 'the message is kept to try again');
+  await page.type('#chatText', '!');
+  assert.equal(await page.isHidden('#chatError'), true, 'typing clears it');
+  // Hotkeys do not fire while typing: Numpad3 resets the timer elsewhere.
+  await page.click('#timerSplit');
+  await page.focus('#chatText');
+  await page.keyboard.press('Numpad3');
+  assert.equal(await page.textContent('#timerSplit'), 'Split', 'the run kept going');
+  await page.click('#timerReset');
+  await page.fill('#chatText', '');
+
+  // The sign-in and the channel survive a reload.
+  await page.reload();
+  await page.waitForSelector('#chatSend:not([hidden])');
+  await eventually(() => joins() === 3);
+});
+
+test('Twitch chat: only the account the stream key streams to, and signing out stops it', { skip }, async () => {
+  // A stream key for another account: the chat goes, and says why.
+  await replaceKey('live_999999_someoneelseskey');
+  await page.waitForSelector('#chatStepText:has-text("another Twitch account")');
+  assert.equal(await page.isHidden('#chatBody'), true);
+  assert.equal(await page.isHidden('#chatSend'), true);
+  assert.equal(await page.evaluate(() => window.studio.chat.ws), null, 'disconnected');
+  // Back to this account's key: back again.
+  await page.click('#chatStepButtons button:has-text("Replace stream key")');
+  await page.fill('#streamKey', 'live_123456_abcdefghij');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('#chatSend:not([hidden])');
+  await eventually(() => joins() === 4);
+
+  // Signing out, from the ⋯ menu.
+  const revoked = twitch.revoked.length;
+  await page.click('#chatMenu');
+  await page.click('.menu [data-action=signout]');               // confirm() accepted
+  await page.waitForSelector('#chatStepButtons button:has-text("Sign in with Twitch")');
+  assert.equal(await page.evaluate(() => window.studio.chat.ws), null);
+  assert.equal(await page.isHidden('#chatBody'), true);
+  await eventually(() => twitch.revoked.length > revoked);
 });
 
 test('no errors in the console', { skip }, () => {

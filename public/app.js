@@ -2,6 +2,7 @@ import { Timer, parseLss, buildLss, fmt } from './timer.js';
 import { Compositor, feedKey, openCamera, openScreen } from './compositor.js';
 import { Mixer, openAudioInput } from './mixer.js';
 import { Streamer } from './stream.js';
+import { TwitchChat, channelName, emoteUrl } from './chat.js';
 
 const $ = (id) => document.getElementById(id);
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -710,6 +711,267 @@ async function addAudioInput(device) {
   }
 }
 
+// ------------------------------------------------------------------- chat
+//
+// The Twitch chat of the account the stream key streams to, as it arrives,
+// and a box to write in it. The page reads the chat straight from Twitch,
+// signed out. Writing goes through the server, which keeps the Twitch
+// sign-in (made with the studio's own Twitch app) as it keeps the key.
+
+const CHAT_KEEP = 300;          // messages kept on the page; older ones scroll away
+const CHAT_STATES = { connecting: 'connecting…', joined: '', missing: 'channel not found', off: '' };
+// Badges with no picture (Twitch's list did not load): the ones that matter, in words.
+const ROLES = { broadcaster: 'streamer', moderator: 'mod', vip: 'vip', subscriber: 'sub' };
+const chat = new TwitchChat({ on: chatEvent });
+let chatWanted = '';            // the channel being shown, or about to be
+let chatStuck = true;           // following the newest message (not scrolled up to read)
+let chatState = '';             // the connection's last state
+let assets = { emotes: {}, badges: {} };   // Twitch's global emotes, the global and channel badges
+let editingApp = false;         // the Twitch app form, opened again from the ⋯ menu
+let signInPoll = null;
+
+/** The channel to show: the signed-in account, and only when the stream key streams to it. */
+function chatChannel() {
+  const t = settings.twitch;
+  return t.account && settings.hasKey && t.keyAccount === t.account.id ? channelName(t.account.login) : '';
+}
+
+function renderChat() {
+  const t = settings.twitch;
+  const channel = chatChannel();
+  if (channel !== chatWanted) {
+    chatWanted = channel;
+    $('chatLog').replaceChildren();
+    $('chatMore').hidden = true;
+    chatStuck = true;
+    chatState = '';
+    $('chatState').textContent = '';
+    if (!channel) chat.join('');
+    // Emotes and badges first, so the first messages already show them.
+    else loadAssets().finally(() => { if (chatWanted === channel) chat.join(channel); });
+  }
+  $('chatChannel').textContent = channel ? `#${channel}` : '';
+  $('chatMenu').hidden = !t.app;
+  $('chatBody').hidden = !channel;
+  // Setting up: every box as tall as what it holds, and the column scrolls if it must.
+  document.querySelector('.side').classList.toggle('chat-setup-open', !channel);
+  $('chatSend').hidden = !(channel && t.canWrite);
+  if ($('chatSend').hidden) chatError('');
+  renderChatSetup();
+  chatEmpty();
+  // Waiting for the owner on twitch.tv/activate: the server says when it is done.
+  clearTimeout(signInPoll);
+  if (t.pending) signInPoll = setTimeout(refreshTwitch, 2000);
+}
+
+function renderChatSetup() {
+  const t = settings.twitch;
+  const name = t.account && t.account.name;
+  $('chatProblem').textContent = t.problem || '';
+  $('chatProblem').hidden = !t.problem;
+  const showApp = !t.app || editingApp;
+  if (showApp && $('chatAppForm').hidden) { $('chatClientId').value = t.clientId || ''; $('chatClientSecret').value = ''; }
+  $('chatAppForm').hidden = !showApp;
+  $('chatAppCancel').hidden = !t.app;
+  let text = null;
+  let buttons = [];
+  if (showApp) {
+    // The form says it all.
+  } else if (t.pending) {
+    text = ['On Twitch, check that the code is ', Object.assign(document.createElement('b'), { className: 'code', textContent: t.pending.code }),
+      ' and press Authorize. This page carries on by itself.'];
+    const open = Object.assign(document.createElement('a'), { className: 'button primary', href: t.pending.url, target: '_blank', rel: 'noopener', textContent: 'Open Twitch ↗' });
+    buttons = [open, btn('Cancel', cancelSignIn)];
+  } else if (!t.account) {
+    text = 'Sign in with the Twitch account you stream from: its chat shows here, and you can write in it.';
+    buttons = [btn('Sign in with Twitch', startSignIn, 'primary')];
+  } else if (!settings.hasKey) {
+    text = `Signed in as ${name}. Add ${name}’s stream key and the chat shows here.`;
+    buttons = [btn('Add stream key', openKeyDialog, 'primary')];
+  } else if (t.keyAccount !== t.account.id) {
+    text = `The stream key is for another Twitch account than ${name}. The chat shows only the account you stream from: sign in with that one, or use ${name}’s stream key.`;
+    buttons = [btn('Sign in again', startSignIn, 'primary'), btn('Replace stream key', openKeyDialog)];
+  } else if (!t.canWrite) {
+    text = 'Sign in again to write in the chat.';
+    buttons = [btn('Sign in with Twitch', startSignIn, 'primary')];
+  }
+  $('chatStepText').replaceChildren(...[].concat(text || []));
+  $('chatStepButtons').replaceChildren(...buttons);
+  $('chatStep').hidden = !text;
+  $('chatSetup').hidden = !showApp && !text && !t.problem;
+}
+
+function chatEmpty() {
+  const channel = chatChannel();
+  $('chatLog').dataset.empty = chatState === 'missing'
+    ? `Twitch has no channel called ${channel} right now.`
+    : `Messages in #${channel}’s chat show up here as they are sent.`;
+}
+
+async function refreshTwitch() {
+  try { settings = await api('/api/settings'); } catch { /* keep what we know */ }
+  renderChat();
+}
+
+async function twitchAction(path, method = 'POST') {
+  try {
+    settings = await api(path, { method });
+  } catch (e) {
+    settings = { ...settings, twitch: { ...settings.twitch, problem: e.message } };
+  }
+  renderChat();
+}
+
+const startSignIn = () => twitchAction('/api/twitch/signin');
+const cancelSignIn = () => twitchAction('/api/twitch/signin', 'DELETE');
+
+$('chatMenu').addEventListener('click', () => {
+  const t = settings.twitch;
+  showMenu($('chatMenu'), [
+    ...(t.account ? [{
+      label: `Sign out of Twitch (${t.account.name})`, action: 'signout', run: () => {
+        if (confirm('Sign out of Twitch? The chat stops showing here until you sign in again.')) twitchAction('/api/twitch/signout');
+      },
+    }] : []),
+    { label: 'Twitch app…', action: 'app', run: () => { editingApp = true; renderChat(); $('chatClientId').focus(); } },
+  ]);
+});
+
+$('chatAppForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const id = $('chatClientId');
+  const secret = $('chatClientSecret');
+  const looksRight = (v) => /^[A-Za-z0-9]{20,64}$/.test(v);
+  const refuse = (input, message) => { input.setCustomValidity(message); input.reportValidity(); };
+  if (!looksRight(id.value.trim())) { refuse(id, 'That does not look like a Client ID: copy it from the app’s page on dev.twitch.tv.'); return; }
+  if (secret.value.trim() && !looksRight(secret.value.trim())) { refuse(secret, 'That does not look like a client secret.'); return; }
+  try {
+    const body = { twitchClientId: id.value.trim(), twitchClientSecret: secret.value.trim() };
+    settings = (await api('/api/settings', { method: 'PUT', body: JSON.stringify(body) })).settings;
+    editingApp = false;
+    secret.value = '';
+    renderChat();
+  } catch (err) {
+    refuse(id, err.message);
+  }
+});
+for (const id of ['chatClientId', 'chatClientSecret']) $(id).addEventListener('input', (e) => e.target.setCustomValidity(''));
+$('chatAppCancel').addEventListener('click', () => { editingApp = false; renderChat(); });
+
+$('chatSend').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = $('chatText');
+  const message = input.value.trim();
+  if (!message || input.readOnly) return;
+  input.readOnly = true;            // not disabled: the cursor stays in the box
+  try {
+    const res = await api('/api/chat', { method: 'POST', body: JSON.stringify({ message }) });
+    // It shows in the chat when Twitch sends it round, like everyone else's.
+    if (res.sent) { input.value = ''; chatError(''); } else chatError(`Not sent: ${res.reason}`);
+  } catch (err) {
+    chatError(`Not sent: ${err.message}`);
+    if (err.status === 409) refreshTwitch();
+  } finally {
+    input.readOnly = false;
+  }
+});
+$('chatText').addEventListener('input', () => chatError(''));
+
+function chatError(text) {
+  $('chatError').textContent = text;
+  $('chatError').hidden = !text;
+}
+
+async function loadAssets() {
+  try { assets = await api('/api/chat/assets'); } catch { assets = { emotes: {}, badges: {} }; }
+}
+
+function chatEvent(event) {
+  if (event.type === 'state') {
+    chatState = event.state;
+    $('chatState').textContent = event.state === 'waiting' ? `reconnecting in ${event.seconds} s` : CHAT_STATES[event.state];
+    $('chatState').dataset.state = event.state;
+    chatEmpty();
+  } else if (event.type === 'message') {
+    addChatLine(chatLine(event.message));
+  } else if (event.type === 'notice') {
+    const li = document.createElement('li');
+    li.className = 'system';
+    li.append(event.text);
+    if (event.message) li.append(document.createElement('br'), ...chatLine(event.message).childNodes);
+    if (li.textContent.trim()) addChatLine(li);
+  } else if (event.type === 'clear') {
+    const log = $('chatLog');
+    if (!event.login) {
+      log.replaceChildren();
+      addChatLine(Object.assign(document.createElement('li'), { className: 'system', textContent: 'A moderator cleared the chat.' }));
+    } else {
+      // Someone timed out or banned: their messages go, like on Twitch.
+      for (const li of [...log.children]) if (li.dataset.login === event.login) li.remove();
+    }
+  } else if (event.type === 'delete') {
+    for (const li of [...$('chatLog').children]) if (li.dataset.id === event.id) li.remove();
+  }
+}
+
+function chatLine(m) {
+  const li = document.createElement('li');
+  li.dataset.id = m.id;
+  li.dataset.login = m.login;
+  li.title = new Date(m.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (m.first) { li.classList.add('first'); li.title += ' · first message in this chat'; }
+  if (m.action) li.classList.add('action');
+  if (chatWanted && new RegExp(`@${chatWanted}\\b`, 'i').test(m.text)) li.classList.add('mention');
+  for (const badge of m.badges) {
+    const pic = assets.badges[badge];
+    const role = ROLES[badge.split('/')[0]];
+    const chip = () => (role ? Object.assign(document.createElement('span'), { className: 'chip', textContent: role }) : '');
+    if (!pic) { li.append(chip()); continue; }
+    const img = Object.assign(document.createElement('img'), { className: 'badge', src: pic.x1, srcset: `${pic.x2} 2x`, alt: pic.title, title: pic.title });
+    img.addEventListener('error', () => img.replaceWith(chip()), { once: true });
+    li.append(img);
+  }
+  if (m.bits) li.append(Object.assign(document.createElement('span'), { className: 'chip bits', textContent: `${m.bits} bits` }));
+  const who = Object.assign(document.createElement('b'), { className: 'who', textContent: m.name });
+  who.style.color = m.color;
+  const text = document.createElement('span');
+  if (m.action) text.style.color = m.color;
+  for (const part of m.parts) {
+    // Twitch's global emotes are pictures; a channel's own emotes stay words.
+    if (part.text !== undefined || !assets.emotes[part.emote]) { text.append(part.text ?? part.name); continue; }
+    const img = Object.assign(document.createElement('img'), {
+      className: 'emote', alt: part.name, title: part.name, src: emoteUrl(part.emote), srcset: `${emoteUrl(part.emote, '2.0')} 2x`,
+    });
+    // An emote that loads after the line was added makes it taller.
+    img.addEventListener('load', followChat, { once: true });
+    img.addEventListener('error', () => img.replaceWith(part.name), { once: true });
+    text.append(img);
+  }
+  li.append(who, m.action ? ' ' : ': ', text);
+  return li;
+}
+
+function addChatLine(li) {
+  const log = $('chatLog');
+  log.append(li);
+  while (log.children.length > CHAT_KEEP) log.firstElementChild.remove();
+  if (chatStuck) followChat();
+  else $('chatMore').hidden = false;
+}
+
+function followChat() {
+  if (!chatStuck) return;
+  const log = $('chatLog');
+  log.scrollTop = log.scrollHeight;
+}
+
+$('chatLog').addEventListener('scroll', () => {
+  const log = $('chatLog');
+  chatStuck = log.scrollHeight - log.scrollTop - log.clientHeight < 30;
+  if (chatStuck) $('chatMore').hidden = true;
+});
+$('chatMore').addEventListener('click', () => { chatStuck = true; followChat(); $('chatMore').hidden = true; });
+
 // ------------------------------------------------------------------ timer
 
 function timerAction(action) {
@@ -837,6 +1099,7 @@ $('keyForm').addEventListener('submit', async (e) => {
     settings = (await api('/api/settings', { method: 'PUT', body: JSON.stringify({ streamKey: key }) })).settings;
     input.value = '';
     $('keyDialog').close();
+    renderChat();
   } catch (err) {
     input.setCustomValidity(err.message);
     input.reportValidity();
@@ -924,6 +1187,8 @@ window.addEventListener('beforeunload', (e) => {
 window.addEventListener('pagehide', () => { if (dirty) flush(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { if (dirty) flush(); } else pull(); });
 window.addEventListener('focus', pull);
+// A Twitch sign-in or a new stream key in another window or on another device.
+window.addEventListener('focus', refreshTwitch);
 
 // ------------------------------------------------------------------ boot
 
@@ -932,6 +1197,7 @@ function renderAll() {
   renderSources();
   renderGreen();
   renderMixer();
+  renderChat();
   renderTimer();
 }
 
@@ -986,6 +1252,6 @@ boot().catch((e) => showStatus({ state: 'error', message: e.message }));
 
 // For the console, and for tests.
 window.studio = {
-  get doc() { return doc; }, get rev() { return rev; }, get dirty() { return dirty; },
-  timer, mixer, compositor, streamer, flush, pull, save,
+  get doc() { return doc; }, get rev() { return rev; }, get dirty() { return dirty; }, get settings() { return settings; },
+  timer, mixer, compositor, streamer, chat, flush, pull, save,
 };

@@ -73,6 +73,42 @@
     <p id="audioPaused" class="hint" hidden>Sound starts at your first click or key press on this page.</p>
     <div id="mixer"></div>
   </section>
+
+  <section class="panel chat-panel">
+    <div class="dock-head">
+      <h2>Chat</h2>
+      <span id="chatState" class="dim"></span>
+      <span id="chatChannel" class="dim"></span>
+      <button id="chatMenu" title="Twitch sign-in" aria-label="Twitch sign-in" aria-haspopup="menu" aria-expanded="false" hidden>⋯</button>
+    </div>
+    <div id="chatSetup" class="chat-setup" hidden>
+      <p id="chatProblem" class="hint problem" hidden></p>
+      <form id="chatAppForm" hidden>
+        <p class="hint">To show your Twitch chat here and write in it, the studio needs a Twitch app of its own (once):</p>
+        <ol class="hint">
+          <li>Create one at <a href="https://dev.twitch.tv/console/apps/create" target="_blank" rel="noopener">dev.twitch.tv/console/apps/create</a>.</li>
+          <li>Any name; OAuth Redirect URL <code>http://localhost</code>; category Broadcaster Suite; client type Public.</li>
+          <li>Paste its Client ID:</li>
+        </ol>
+        <input id="chatClientId" autocomplete="off" spellcheck="false" placeholder="Client ID" aria-label="Twitch app Client ID">
+        <input id="chatClientSecret" type="password" autocomplete="off" placeholder="Client secret (a Confidential app only)" aria-label="Twitch app client secret">
+        <div class="row end tight"><button type="button" id="chatAppCancel" hidden>Cancel</button><button class="primary">Save</button></div>
+      </form>
+      <div id="chatStep" hidden>
+        <p id="chatStepText" class="hint"></p>
+        <div id="chatStepButtons" class="row tight wrap"></div>
+      </div>
+    </div>
+    <div id="chatBody" class="chat-body" hidden>
+      <ol id="chatLog" class="chat-log" role="log" aria-label="Twitch chat"></ol>
+      <button id="chatMore" class="chat-more" hidden>New messages ↓</button>
+    </div>
+    <form id="chatSend" class="row tight" hidden>
+      <input id="chatText" maxlength="500" autocomplete="off" placeholder="Send a message" aria-label="Message for the chat">
+      <button class="primary">Chat</button>
+    </form>
+    <p id="chatError" class="hint problem" hidden></p>
+  </section>
 </aside>
 
 <form id="logoutForm" method="post" action="/api/logout" hidden></form>

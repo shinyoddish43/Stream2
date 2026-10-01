@@ -50,6 +50,16 @@ turns what the browser sends into the H.264/AAC stream Twitch wants.
   (`ingest.global-contribute.live-video.net`); there are no settings. The
   stream key is kept on the server (never sent back to the browser).
 
+- **Chat** — the Twitch chat of the account you stream from, under the audio
+  mixer, with Twitch's badges and its global emotes (a channel's own emotes,
+  and BTTV/7TV ones, show as their names), and a box to write in it. Moderators'
+  deletions and timeouts take messages away as they do on Twitch. It needs a
+  Twitch app of your own once (the chat panel says how: a Client ID from
+  dev.twitch.tv, client type Public) and a sign-in with Twitch (a code on
+  twitch.tv/activate). The chat shows only when the signed-in account is the
+  stream key's; messages go out through the Twitch API as that account, and
+  the sign-in stays on the server like the stream key.
+
 That is the whole feature list, on purpose.
 
 ## Put it on your VPS
@@ -175,4 +185,5 @@ npm test
 | `test/sso.test.mjs` | single sign-on: the user a trusted proxy names is signed in (pages, API, stream socket), others and other addresses are not, log out goes back through the hub, the password login still works |
 | `test/install.test.mjs` | the installer against real Caddy and nginx in scratch folders: another site already on the server is kept, a clash or a broken config is rolled back without a reload, reruns are idempotent, IPv6 only where the kernel has it; `push.sh`'s remote command, quoting included; and `deploy/docker/push.sh` shipping the working tree without touching your git index |
 | `test/twitch.test.mjs` | a real ffmpeg pushes to a local RTMP server standing in for Twitch; checks H.264 + AAC, frame rate, and a keyframe every 2 s (skipped without ffmpeg) |
-| `test/browser.test.mjs` | the studio in Chromium: the one-column layout, the default mic (meter while muted, a mic from another computer, a blocked mic), sign in, add a device, key a green screen onto an uploaded background and check the pixels, drag, the layout menu, layouts shared with a second browser (live updates, a stale save merged), unsaved changes restored, timer hotkeys, `.lss` round trip, mixer meters, the stream key popup and going live (skipped without Playwright) |
+| `test/chat.test.mjs` | Twitch chat: IRC lines, emote positions, readable name colours, the connection (join signed out, PING, moderators, RECONNECT, retry, a channel Twitch does not have) against a stand-in chat server; and on the server, against a stand-in Twitch (`test/fake-twitch.mjs`): the app's Client ID and secret, the device code sign-in, tokens never leaving the server, sending only as the stream key's account, dropped messages, token renewal, sign-out, the hourly check, global emotes and badges |
+| `test/browser.test.mjs` | the studio in Chromium: the one-column layout, the default mic (meter while muted, a mic from another computer, a blocked mic), sign in, add a device, key a green screen onto an uploaded background and check the pixels, drag, the layout menu, layouts shared with a second browser (live updates, a stale save merged), unsaved changes restored, timer hotkeys, `.lss` round trip, mixer meters, the stream key popup and going live, the chat (set up, sign in, badges and emotes, moderators, a busy chat, writing in it, another account's key, sign-out) (skipped without Playwright) |
