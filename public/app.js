@@ -733,7 +733,9 @@ let signInPoll = null;
 /** The channel to show: the signed-in account, and only when the stream key streams to it. */
 function chatChannel() {
   const t = settings.twitch;
-  return t.account && settings.hasKey && t.keyAccount === t.account.id ? channelName(t.account.login) : '';
+  if (!t.account) return '';
+  const streamsHere = settings.hasKey ? t.keyAccount === t.account.id : t.canKey;   // no key yet: it comes from this account
+  return streamsHere ? channelName(t.account.login) : '';
 }
 
 function renderChat() {
@@ -785,12 +787,14 @@ function renderChatSetup() {
   } else if (!t.account) {
     text = 'Sign in with the Twitch account you stream from: its chat shows here, and you can write in it.';
     buttons = [btn('Sign in with Twitch', startSignIn, 'primary')];
-  } else if (!settings.hasKey) {
+  } else if (!settings.hasKey && !t.canKey) {
     text = `Signed in as ${name}. Add ${name}’s stream key and the chat shows here.`;
     buttons = [btn('Add stream key', openKeyDialog, 'primary')];
-  } else if (t.keyAccount !== t.account.id) {
+  } else if (settings.hasKey && t.keyAccount !== t.account.id) {
     text = `The stream key is for another Twitch account than ${name}. The chat shows only the account you stream from: sign in with that one, or use ${name}’s stream key.`;
-    buttons = [btn('Sign in again', startSignIn, 'primary'), btn('Replace stream key', openKeyDialog)];
+    buttons = t.canKey
+      ? [btn(`Use ${name}’s stream key`, () => twitchAction('/api/twitch/streamkey'), 'primary'), btn('Sign in again', startSignIn), btn('Replace stream key', openKeyDialog)]
+      : [btn('Sign in again', startSignIn, 'primary'), btn('Replace stream key', openKeyDialog)];
   } else if (!t.canWrite) {
     text = 'Sign in again to write in the chat.';
     buttons = [btn('Sign in with Twitch', startSignIn, 'primary')];
@@ -1080,6 +1084,13 @@ window.addEventListener('keydown', (e) => {
 
 // ------------------------------------------------------------- stream key
 
+let afterKey = null;            // what was waiting for a stream key (going live), done once one is saved
+
+function askForKey(then) {
+  afterKey = then;
+  openKeyDialog();
+}
+
 function openKeyDialog() {
   const input = $('streamKey');
   input.value = '';
@@ -1093,34 +1104,312 @@ $('keyForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const input = $('streamKey');
   const key = input.value.trim();
-  if (!key && settings.hasKey) { $('keyDialog').close(); return; }
+  const next = afterKey;
+  if (!key && settings.hasKey) { $('keyDialog').close(); if (next) next(); return; }
   try {
     if (!key) throw new Error('Paste the key from your Twitch Creator Dashboard: Settings → Stream.');
     settings = (await api('/api/settings', { method: 'PUT', body: JSON.stringify({ streamKey: key }) })).settings;
     input.value = '';
     $('keyDialog').close();
     renderChat();
+    if (next) next();
   } catch (err) {
     input.setCustomValidity(err.message);
     input.reportValidity();
   }
 });
 $('streamKey').addEventListener('input', (e) => e.target.setCustomValidity(''));
+$('keyDialog').addEventListener('close', () => { afterKey = null; });
 
 // ------------------------------------------------------------------ live
 
+// Start streaming: the stream key if none is known yet, then the title and
+// category, then live.
 $('streamButton').addEventListener('click', async () => {
   if (streamer.live) { if (confirm('Stop streaming?')) streamer.stop(); return; }
-  if (!(await hasKey())) { openKeyDialog(); return; }
-  await mixer.resume();
-  streamer.start({ ...doc.output });
+  mixer.resume();               // this click is what the browser wants before sound can start
+  if (!(await hasKey())) { askForKey(openLiveDialog); return; }
+  openLiveDialog();
 });
 
-// The key may have been saved in another window since this one loaded.
+// Is a stream key saved? Asked only once: after that it stays saved on the
+// server. It may have been saved in another window since this one loaded, and
+// signed in with Twitch the studio fetches it from there and saves it.
 async function hasKey() {
-  if (!settings.hasKey) settings = (await api('/api/state').catch(() => ({ settings }))).settings;
+  if (settings.hasKey) return true;
+  try { settings = await api('/api/settings'); } catch { /* keep what we know */ }
+  if (!settings.hasKey && settings.twitch.account && settings.twitch.canKey) {
+    try { settings = await api('/api/twitch/streamkey', { method: 'POST' }); } catch { /* then it is asked for */ }
+    renderChat();
+  }
   return settings.hasKey;
 }
+
+async function startStream() {
+  await mixer.resume();
+  streamer.start({ ...doc.output });
+}
+
+// ------------------------------------------------- title and category
+
+const categories = new Map();   // Twitch categories this page has seen, by lower-case name
+let recentCategories = [];      // [{ id, name }], newest first, the server keeps them
+let liveSaved = null;           // the title and category as Twitch has them
+let liveCanSet = false;         // the dialog may change them on Twitch
+let liveUpdateFailed = false;   // Twitch refused: the next "Go live" goes without
+
+const knowCategory = (c) => categories.set(c.name.toLowerCase(), c);
+function setRecentCategories(items) {
+  if (!Array.isArray(items)) return;
+  recentCategories = items.slice(0, 3);
+  recentCategories.forEach(knowCategory);
+}
+
+async function searchCategories(query) {
+  const data = await api(`/api/twitch/categories?q=${encodeURIComponent(query)}`);
+  data.items.forEach(knowCategory);
+  return data.items;
+}
+
+// The Twitch category a typed name stands for: null for an empty field.
+async function resolveCategory(name) {
+  const wanted = name.trim().toLowerCase();
+  if (!wanted) return null;
+  const found = categories.get(wanted) || (await searchCategories(name.trim())).find((c) => c.name.toLowerCase() === wanted);
+  if (!found) throw Object.assign(new Error('Pick a category from the list.'), { field: 'liveCategory' });
+  return found;
+}
+
+function liveNote(text) {
+  $('liveNote').textContent = text || '';
+  $('liveNote').hidden = !text;
+}
+function liveError(text) {
+  $('liveError').textContent = text || '';
+  $('liveError').hidden = !text;
+}
+
+async function openLiveDialog() {
+  const t = settings.twitch;
+  liveCanSet = !!(t.account && t.canTitle);
+  liveUpdateFailed = false;
+  liveSaved = null;
+  $('liveTitle').value = '';
+  $('liveCategory').value = '';
+  $('liveTitle').disabled = $('liveCategory').disabled = true;
+  $('liveGo').textContent = 'Go live';
+  $('liveGo').disabled = false;
+  liveError('');
+  liveNote(!t.account ? 'Sign in with Twitch in the Chat panel to set the title and category from here. Going live keeps the ones Twitch has.'
+    : !t.canTitle ? 'Sign in with Twitch again (Chat panel) to set the title and category from here. Going live keeps the ones Twitch has.'
+    : 'Asking Twitch…');
+  if (!$('liveDialog').open) $('liveDialog').showModal();
+  $('liveGo').focus();
+  if (!liveCanSet) return;
+  try {
+    const info = await api('/api/twitch/channel');
+    $('liveTitle').value = info.title;
+    $('liveCategory').value = info.category ? info.category.name : '';
+    if (info.category) knowCategory(info.category);
+    setRecentCategories(info.recent);
+    liveSaved = { title: info.title, category: $('liveCategory').value };
+    $('liveTitle').disabled = $('liveCategory').disabled = false;
+    liveNote('');
+    $('liveTitle').focus();
+  } catch (err) {
+    liveCanSet = false;
+    liveNote(`${err.message} Going live keeps the title and category Twitch has.`);
+  }
+}
+
+$('liveForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  livePicker.close();
+  const title = $('liveTitle').value.trim();
+  const name = $('liveCategory').value.trim();
+  const changed = liveCanSet && liveSaved && (title || name)
+    && (title !== liveSaved.title.trim() || name.toLowerCase() !== liveSaved.category.toLowerCase());
+  if (changed && !liveUpdateFailed) {
+    $('liveGo').disabled = true;
+    try {
+      const category = await resolveCategory(name);
+      if (category) $('liveCategory').value = category.name;
+      const res = await api('/api/twitch/channel', { method: 'PUT', body: JSON.stringify({ title, categoryId: category ? category.id : '' }) });
+      setRecentCategories(res.recent);
+    } catch (err) {
+      if (err.field) { liveError(err.message); $(err.field).focus(); return; }
+      // Twitch said no: say why, and let the next press go live with what Twitch has.
+      liveUpdateFailed = true;
+      liveError(`Twitch did not take the title and category: ${err.message}`);
+      $('liveGo').textContent = 'Go live with the old title';
+      return;
+    } finally {
+      $('liveGo').disabled = false;
+    }
+  }
+  $('liveDialog').close();
+  startStream();
+});
+$('liveCancel').addEventListener('click', () => $('liveDialog').close());
+$('liveDialog').addEventListener('close', () => livePicker.close());
+for (const id of ['liveTitle', 'liveCategory']) {
+  $(id).addEventListener('input', () => {
+    liveError('');
+    if (liveUpdateFailed) { liveUpdateFailed = false; $('liveGo').textContent = 'Go live'; }
+  });
+}
+
+// The category field is a combobox, as on the hub: typing lists exact Twitch
+// categories, clicking it lists the three used most recently. Arrow keys move
+// through the list, Enter picks, Escape closes.
+function categoryPicker(input, list) {
+  const results = new Map(); // lower-case query -> Twitch's answer, for this page
+  let options = [];
+  let active = -1;
+  let showing = '';          // 'recent', 'results' or 'note' while open
+  let timer = null;
+  let asked = 0;             // numbers the searches; only the newest may fill the list
+  let keepSelection = false;
+  const item = (text, className) => Object.assign(document.createElement('li'), { textContent: text, className });
+
+  function open(kind) {
+    showing = kind;
+    list.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+  }
+
+  function close() {
+    clearTimeout(timer);
+    asked += 1;
+    showing = '';
+    list.hidden = true;
+    input.setAttribute('aria-expanded', 'false');
+    highlight(-1);
+  }
+
+  function highlight(index) {
+    active = index;
+    list.querySelectorAll('[role="option"]').forEach((row, i) => {
+      row.setAttribute('aria-selected', String(i === index));
+      if (i === index) row.scrollIntoView({ block: 'nearest' });
+    });
+    if (index >= 0) input.setAttribute('aria-activedescendant', `${list.id}-${index}`);
+    else input.removeAttribute('aria-activedescendant');
+  }
+
+  function note(text) {
+    options = [];
+    list.replaceChildren(item(text, 'combo-note'));
+    highlight(-1);
+    open('note');
+  }
+
+  function offer(items, heading, kind) {
+    options = items;
+    const rows = items.map((c, i) => {
+      const row = item(c.name, 'combo-option');
+      row.id = `${list.id}-${i}`;
+      row.setAttribute('role', 'option');
+      row.addEventListener('click', () => choose(c));
+      return row;
+    });
+    if (heading) {
+      const title = item(heading, 'combo-heading');
+      title.setAttribute('role', 'presentation');
+      rows.unshift(title);
+    }
+    list.replaceChildren(...rows);
+    highlight(-1);
+    open(kind);
+  }
+
+  function choose(c) {
+    knowCategory(c);
+    input.value = c.name;
+    input.dispatchEvent(new Event('input'));
+    close();
+  }
+
+  function showRecent() {
+    if (recentCategories.length) offer(recentCategories, 'Recently used', 'recent');
+    else note('Type to search Twitch categories.');
+  }
+
+  async function search(query) {
+    const key = query.toLowerCase();
+    const ticket = ++asked;
+    if (!results.has(key)) {
+      if (showing !== 'results') note('Searching Twitch…');
+      try {
+        results.set(key, await searchCategories(query));
+      } catch (error) {
+        if (ticket === asked) note(error.message);
+        return;
+      }
+    }
+    if (ticket !== asked || document.activeElement !== input) return;
+    const found = results.get(key);
+    if (found.length) offer(found, '', 'results');
+    else note('No Twitch category matches that.');
+  }
+
+  input.addEventListener('focus', () => {
+    input.select();
+    keepSelection = true;
+    showRecent();
+  });
+  // The click that focused the field would drop the selection on mouseup.
+  input.addEventListener('mouseup', (event) => {
+    if (keepSelection) event.preventDefault();
+    keepSelection = false;
+  });
+  input.addEventListener('click', () => {
+    if (list.hidden) showRecent();
+  });
+  input.addEventListener('input', (event) => {
+    if (!event.isTrusted) return;          // a pick from the list, not typing
+    clearTimeout(timer);
+    const query = input.value.trim();
+    if (!query) {
+      asked += 1;
+      showRecent();
+      return;
+    }
+    timer = setTimeout(() => search(query), 250);
+  });
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (list.hidden) {
+        const query = input.value.trim();
+        if (query && !categories.has(query.toLowerCase())) search(query);
+        else showRecent();
+        return;
+      }
+      if (!options.length) return;
+      const step = event.key === 'ArrowDown' ? 1 : -1;
+      if (active < 0) highlight(step > 0 ? 0 : options.length - 1);
+      else highlight((active + step + options.length) % options.length);
+    } else if (event.key === 'Enter' && !list.hidden && active >= 0) {
+      event.preventDefault();
+      choose(options[active]);
+    } else if (event.key === 'Escape' && !list.hidden) {
+      event.preventDefault();      // closes the list, not the dialog
+      close();
+    }
+  });
+  input.addEventListener('blur', () => {
+    close();
+    // Typed in other capitals: show Twitch's own spelling.
+    const known = categories.get(input.value.trim().toLowerCase());
+    if (known) input.value = known.name;
+  });
+  // Pressing on the list must not take the focus away from the field.
+  list.addEventListener('mousedown', (event) => event.preventDefault());
+  return { close };
+}
+
+const livePicker = categoryPicker($('liveCategory'), $('liveCategoryList'));
 
 // "Go live" from a hub dashboard (HUB_ORIGIN on the server, the six7 hub). The
 // hub opens this studio in a window of its own; when the page is ready it says
@@ -1145,7 +1434,8 @@ function hubLink(hubOrigin) {
 // page has been clicked once; if that is why the mixer is still asleep, one
 // full-window button asks for the click instead of streaming silence.
 async function goLive() {
-  if (!(await hasKey())) { openKeyDialog(); return 'needs-key'; }
+  // No key known: ask once, and carry on going live as soon as it is saved.
+  if (!(await hasKey())) { askForKey(() => goLive()); return 'needs-key'; }
   await Promise.race([mixer.resume(), new Promise((resolve) => setTimeout(resolve, 500))]);
   if (mixer.ctx.state !== 'running') {
     $('goLiveOverlay').hidden = false;

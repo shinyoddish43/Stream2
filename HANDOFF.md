@@ -164,6 +164,34 @@ CI 63/63.
 - **Owner step:** create the Twitch app (the chat panel lists the steps), paste
   its Client ID, sign in with the account you stream from.
 
+## October 1: going live, the stream key, title and category
+
+Checked with the hub's real Go live code (portal.js) in Chromium with Chrome's
+desktop sound rule:
+
+- Hub **Go live** opens the studio in its "fstream" window, the studio says
+  it is ready, the hub says go live. No key is ever asked for once one is
+  saved. A studio window that is already open goes live by itself. A **new**
+  studio window needs one click ("Go live now"): Chrome starts no sound in a
+  page that has not been clicked, and the studio will not stream silence. A
+  hub-started go-live skips the title/category dialog (the hub has its own).
+- The live studio had **no stream key saved** (no `settings.json` in the volume
+  or any backup), which is why it asked. The key is saved in
+  `/data/settings.json` (Docker volume `streamstudio_data`), which survives
+  deploys. If the key has to be asked for during a go-live, the go-live carries
+  on as soon as it is saved.
+- The Twitch sign-in now also asks for `channel:manage:broadcast` and
+  `channel:read:stream_key`. Signing in saves the account's stream key (when
+  none is saved, or the saved one is the same account's); every stream start
+  renews it from Twitch (5 s limit, else the saved key); another account's
+  key is never replaced silently (the chat panel offers "Use X's stream key").
+- **Start streaming** opens a Go live dialog: title and category, prefilled
+  from Twitch, the category a combobox ported from the hub's (three recently
+  used on focus, Twitch search after 250 ms, arrows/Enter/Escape, must be a
+  Twitch category), saved with Helix `PATCH /channels` before going live.
+  Recent categories live in `settings.json` (`twitchRecent`, 10 kept, 3 shown).
+- Tests: 94/94 (Playwright 1.49; the browser file also under 1.62).
+
 ## Not done
 
 - **Not yet done by a person:** signing in to the studio as the owner (the

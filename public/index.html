@@ -120,6 +120,20 @@
   </form>
 </dialog>
 
+<dialog id="liveDialog" class="mini">
+  <form id="liveForm" class="live-form">
+    <h2>Go live</h2>
+    <p id="liveNote" class="hint" hidden></p>
+    <input id="liveTitle" maxlength="140" autocomplete="off" placeholder="Stream title" aria-label="Stream title">
+    <div class="combo">
+      <input id="liveCategory" maxlength="60" autocomplete="off" placeholder="Category" aria-label="Category" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="liveCategoryList">
+      <ul class="combo-list" id="liveCategoryList" role="listbox" aria-label="Twitch categories" hidden></ul>
+    </div>
+    <p id="liveError" class="hint problem" role="alert" hidden></p>
+    <div class="row end"><button type="button" id="liveCancel">Cancel</button><button class="primary" id="liveGo">Go live</button></div>
+  </form>
+</dialog>
+
 <dialog id="hotkeysDialog" class="mini">
   <form method="dialog" id="hotkeysForm">
     <h2>Hotkeys</h2>

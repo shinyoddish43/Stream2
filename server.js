@@ -470,6 +470,24 @@ async function route(req, res) {
   if (p === '/api/twitch/signout' && method === 'POST') { signOut(); send(res, 200, publicSettings()); return; }
   if (p === '/api/chat/assets' && method === 'GET') { send(res, 200, await loadChatAssets()); return; }
 
+  if (p === '/api/twitch/streamkey' && method === 'POST') { await keyFromTwitch(); send(res, 200, publicSettings()); return; }
+  if (p === '/api/twitch/channel' && method === 'GET') { send(res, 200, await channelInfo()); return; }
+  if (p === '/api/twitch/categories' && method === 'GET') {
+    const query = String(url.searchParams.get('q') || '').trim().slice(0, 60);
+    send(res, 200, { items: query ? await searchCategories(query) : [] });
+    return;
+  }
+  if (p === '/api/twitch/channel' && method === 'PUT') {
+    const body = (await readJsonBody(req, 4096)) || {};
+    const title = typeof body.title === 'string' ? body.title.trim() : '';
+    const categoryId = String(body.categoryId || '');
+    if ([...title].length > 140) throw fail(400, 'Twitch takes a title of at most 140 characters.');
+    if (!/^\d{0,20}$/.test(categoryId)) throw fail(400, 'Pick a category from the list.');
+    if (!title && !categoryId) throw fail(400, 'Give the stream a title or a category.');
+    send(res, 200, await setChannel(title, categoryId));
+    return;
+  }
+
   if (p === '/api/chat' && method === 'POST') {
     const body = await readJsonBody(req, 8192);
     const message = body && typeof body.message === 'string' ? body.message.trim() : '';
@@ -516,7 +534,11 @@ async function route(req, res) {
 
 const TWITCH_AUTH = String(process.env.TWITCH_AUTH_URL || 'https://id.twitch.tv/oauth2').replace(/\/+$/, '');
 const TWITCH_API = String(process.env.TWITCH_API_URL || 'https://api.twitch.tv/helix').replace(/\/+$/, '');
-const TWITCH_SCOPES = 'user:write:chat';
+// Write in the chat; set the stream's title and category; read the stream key,
+// so going live never has to ask for it.
+const TWITCH_SCOPES = 'user:write:chat channel:manage:broadcast channel:read:stream_key';
+const RECENT_SHOWN = 3;     // categories offered as "recently used", as on the hub
+const RECENT_KEPT = 10;
 const TWITCH_CDN = 'https://static-cdn.jtvnw.net/';
 
 let signIn = null;          // the device code sign-in waiting for the owner on twitch.tv/activate
@@ -527,7 +549,7 @@ let refreshing = null;      // the token refresh in flight: one at a time, the r
 // Twitch stream keys look like live_<account id>_<secret>.
 const keyAccount = (key) => (/^live_(\d+)_/.exec(String(key || '')) || [])[1] || null;
 
-async function twitchCall(url, { method = 'GET', token, clientId, form, json } = {}) {
+async function twitchCall(url, { method = 'GET', token, clientId, form, json, timeout = 15000 } = {}) {
   const headers = {};
   if (clientId) headers['Client-Id'] = clientId;
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -535,12 +557,23 @@ async function twitchCall(url, { method = 'GET', token, clientId, form, json } =
   if (form) { headers['Content-Type'] = 'application/x-www-form-urlencoded'; body = new URLSearchParams(form).toString(); }
   if (json) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(json); }
   let res;
-  try { res = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(15000) }); } catch { throw fail(502, 'Could not reach Twitch.'); }
+  try { res = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(timeout) }); } catch { throw fail(502, 'Could not reach Twitch.'); }
   const data = await res.json().catch(() => ({}));
   return { status: res.status, ok: res.ok, data: data && typeof data === 'object' ? data : {} };
 }
 
 const twitchSaid = (res, what) => `${what}${res.data.message ? `: ${res.data.message}` : ` (${res.status})`}.`;
+
+// Sign-ins from before the studio asked for more than the chat have only that.
+const hasScope = (user, scope) => !!user && !!user.refresh && (Array.isArray(user.scopes) ? user.scopes : ['user:write:chat']).includes(scope);
+
+/** A Helix call with the signed-in account's token, renewed once if Twitch says it ran out. */
+async function helix(path, { method = 'GET', json, timeout } = {}) {
+  const clientId = (readJson('settings.json', {}).twitchApp || {}).clientId;
+  const call = async (token) => twitchCall(`${TWITCH_API}${path}`, { method, json, token, clientId, timeout });
+  const res = await call(await accessToken());
+  return res.status === 401 ? call(await accessToken(true)) : res;
+}
 
 function twitchStatus(s) {
   const user = s.twitchUser;
@@ -548,7 +581,9 @@ function twitchStatus(s) {
     app: !!(s.twitchApp && s.twitchApp.clientId),
     clientId: (s.twitchApp && s.twitchApp.clientId) || '',
     account: user ? { id: user.id, login: user.login, name: user.name } : null,
-    canWrite: !!(user && user.refresh),
+    canWrite: hasScope(user, 'user:write:chat'),
+    canTitle: hasScope(user, 'channel:manage:broadcast'),
+    canKey: hasScope(user, 'channel:read:stream_key'),
     keyAccount: keyAccount(s.streamKey),
     pending: signIn ? { code: signIn.code, url: signIn.url, expires: signIn.expires } : null,
     problem: twitchProblem,
@@ -592,8 +627,11 @@ function waitForSignIn(flow) {
     if (signIn !== flow) return;
     const message = String(res.data.message || '');
     if (res.ok && res.data.access_token) {
-      stopSignIn();
+      // Still "signing in" until the account and its stream key are saved, so
+      // the page never sees one without the other.
+      clearTimeout(flow.timer);
       try { await keepSignIn(res.data, app); } catch (e) { twitchProblem = e.message; }
+      if (signIn === flow) stopSignIn();
     } else if (/authorization_pending/i.test(message)) {
       waitForSignIn(flow);
     } else if (/slow_down/i.test(message)) {
@@ -617,11 +655,103 @@ async function keepSignIn(tokens, app) {
   if (s.twitchUser && s.twitchUser.access) revoke(s.twitchUser.access, app.clientId);
   s.twitchUser = {
     id: String(v.data.user_id), login: String(v.data.login), name: String(name),
+    scopes: Array.isArray(v.data.scopes) ? v.data.scopes.map(String) : [],
     access: tokens.access_token, refresh: tokens.refresh_token, expires: Date.now() + (Number(tokens.expires_in) || 3600) * 1000,
   };
   writeJson('settings.json', s);
   twitchProblem = '';
   chatAssets = null;
+  // The stream key comes with the sign-in: none saved yet, or this account's
+  // (renewed). Another account's key stays; the chat panel offers to switch.
+  if (!s.streamKey || keyAccount(s.streamKey) === s.twitchUser.id) await keyFromTwitch().catch(() => {});
+}
+
+/** The signed-in account's stream key, from Twitch, saved like a pasted one. */
+async function keyFromTwitch({ timeout } = {}) {
+  const user = readJson('settings.json', {}).twitchUser;
+  if (!hasScope(user, 'channel:read:stream_key')) throw fail(409, 'Sign in with Twitch (Chat panel) to get the stream key from there.');
+  const res = await helix(`/streams/key?broadcaster_id=${encodeURIComponent(user.id)}`, { timeout });
+  const key = String((res.ok && Array.isArray(res.data.data) && res.data.data[0] && res.data.data[0].stream_key) || '');
+  if (!/^[A-Za-z0-9_-]{8,200}$/.test(key)) throw fail(502, twitchSaid(res, 'Twitch did not give the stream key'));
+  const s = readJson('settings.json', {});
+  if (!s.twitchUser || s.twitchUser.id !== user.id) throw fail(409, 'Signed out of Twitch meanwhile.');
+  if (s.streamKey !== key) { s.streamKey = key; writeJson('settings.json', s); }
+  return key;
+}
+
+// The key a stream starts with: the saved one, renewed from Twitch first when
+// the studio is signed in to the account it streams to (so a key reset on
+// Twitch just works). Whatever Twitch gives is saved.
+async function keyForStream() {
+  const s = readJson('settings.json', {});
+  const user = s.twitchUser;
+  if (hasScope(user, 'channel:read:stream_key') && (!s.streamKey || keyAccount(s.streamKey) === user.id)) {
+    try { return await keyFromTwitch({ timeout: 5000 }); } catch { /* the saved one, if there is one */ }
+  }
+  return readJson('settings.json', {}).streamKey || null;
+}
+
+// ------------------------------------------- the stream's title and category
+
+/** The account whose title and category the studio sets: the one it streams to. */
+function broadcastAccount() {
+  const s = readJson('settings.json', {});
+  const user = s.twitchUser;
+  if (!user || !user.refresh) throw fail(409, 'Sign in with Twitch (Chat panel) to set the title and category from here.');
+  if (!hasScope(user, 'channel:manage:broadcast')) throw fail(409, 'Sign in with Twitch again (Chat panel, ⋯ → Sign out, then sign in) to let the studio set the title and category.');
+  if (s.streamKey && keyAccount(s.streamKey) !== user.id) throw fail(409, `The stream key is for another Twitch account than ${user.name}.`);
+  return user;
+}
+
+function recentCategories() {
+  return (readJson('settings.json', {}).twitchRecent || []).slice(0, RECENT_SHOWN).map(({ id, name }) => ({ id, name }));
+}
+
+/** Note a category the stream used, however it was set (here or on Twitch). */
+function rememberCategory(category) {
+  if (!category || !/^\d{1,20}$/.test(category.id) || !category.name) return;
+  const s = readJson('settings.json', {});
+  const list = (s.twitchRecent || []).filter((c) => c.id !== category.id);
+  s.twitchRecent = [{ id: category.id, name: String(category.name).slice(0, 200) }, ...list].slice(0, RECENT_KEPT);
+  writeJson('settings.json', s);
+}
+
+async function channelInfo() {
+  const user = broadcastAccount();
+  const res = await helix(`/channels?broadcaster_id=${encodeURIComponent(user.id)}`);
+  if (!res.ok) throw fail(502, twitchSaid(res, 'Twitch did not say what the stream is set to'));
+  const row = (Array.isArray(res.data.data) && res.data.data[0]) || {};
+  const category = row.game_id ? { id: String(row.game_id), name: String(row.game_name || '') } : null;
+  if (category) rememberCategory(category);
+  return { title: String(row.title || ''), category, recent: recentCategories() };
+}
+
+async function searchCategories(query) {
+  const res = await helix(`/search/categories?query=${encodeURIComponent(query)}&first=10`);
+  if (!res.ok) throw fail(502, twitchSaid(res, 'Twitch did not search its categories'));
+  const found = (Array.isArray(res.data.data) ? res.data.data : [])
+    .filter((c) => c && c.id && c.name)
+    .map((c) => ({ id: String(c.id), name: String(c.name) }));
+  // Twitch ranks by relevance; a category named exactly what was typed goes first.
+  const wanted = query.toLowerCase();
+  return found.sort((a, b) => (a.name.toLowerCase() !== wanted) - (b.name.toLowerCase() !== wanted));
+}
+
+async function setChannel(title, categoryId) {
+  const user = broadcastAccount();
+  const body = {};
+  if (title) body.title = title;
+  if (categoryId) body.game_id = categoryId;
+  const res = await helix(`/channels?broadcaster_id=${encodeURIComponent(user.id)}`, { method: 'PATCH', json: body });
+  if (!res.ok) throw fail(502, twitchSaid(res, 'Twitch did not change the title and category'));
+  if (categoryId) {
+    // The name comes from Twitch, not the page. The change is made either way;
+    // only the recent list would miss it.
+    const game = await helix(`/games?id=${encodeURIComponent(categoryId)}`).catch(() => null);
+    const row = game && game.ok && Array.isArray(game.data.data) && game.data.data[0];
+    if (row && String(row.id) === categoryId) rememberCategory({ id: categoryId, name: String(row.name || '') });
+  }
+  return { saved: true, recent: recentCategories() };
 }
 
 function revoke(token, clientId) {
@@ -690,7 +820,14 @@ async function checkTwitch() {
   try {
     let v = user.access ? await twitchCall(`${TWITCH_AUTH}/validate`, { token: user.access }) : { status: 401, ok: false, data: {} };
     if (v.status === 401 || (v.ok && Number(v.data.expires_in) < 2 * 3600)) v = await twitchCall(`${TWITCH_AUTH}/validate`, { token: await accessToken(true) });
-    const before = readJson('settings.json', {}).twitchUser;
+    let before = readJson('settings.json', {}).twitchUser;
+    if (v.ok && before && before.id === String(v.data.user_id) && Array.isArray(v.data.scopes)
+      && v.data.scopes.join(' ') !== (before.scopes || []).join(' ')) {
+      const s = readJson('settings.json', {});
+      s.twitchUser.scopes = v.data.scopes.map(String);
+      writeJson('settings.json', s);
+      before = s.twitchUser;
+    }
     if (!v.ok || !v.data.login || !before || before.id !== String(v.data.user_id) || before.login === v.data.login) return;
     const app = readJson('settings.json', {}).twitchApp || {};
     const u = await twitchCall(`${TWITCH_API}/users?id=${encodeURIComponent(before.id)}`, { token: await accessToken(), clientId: app.clientId });
@@ -740,11 +877,10 @@ async function sendChat(message) {
   const s = readJson('settings.json', {});
   const user = s.twitchUser;
   if (!user || !user.refresh) throw fail(409, 'Sign in with Twitch to write in the chat.');
-  if (keyAccount(s.streamKey) !== user.id) throw fail(409, 'The chat is the stream key’s account, and you are signed in with another one.');
-  const clientId = (s.twitchApp || {}).clientId;
-  const post = async (token) => twitchCall(`${TWITCH_API}/chat/messages`, { method: 'POST', token, clientId, json: { broadcaster_id: user.id, sender_id: user.id, message } });
-  let res = await post(await accessToken());
-  if (res.status === 401) res = await post(await accessToken(true));
+  // No key saved yet is fine when it will come from this account.
+  const streamsHere = s.streamKey ? keyAccount(s.streamKey) === user.id : hasScope(user, 'channel:read:stream_key');
+  if (!streamsHere) throw fail(409, 'The chat is the stream key’s account, and you are signed in with another one.');
+  const res = await helix('/chat/messages', { method: 'POST', json: { broadcaster_id: user.id, sender_id: user.id, message } });
   if (res.ok) {
     const d = (Array.isArray(res.data.data) && res.data.data[0]) || {};
     if (d.is_sent) return { sent: true };
@@ -800,7 +936,8 @@ function relay(ws) {
     if (error) ws.close();
   };
 
-  ws.on('message', (data, isBinary) => {
+  let starting = false;
+  ws.on('message', async (data, isBinary) => {
     if (isBinary) {
       if (!ffmpeg || !ffmpeg.stdin.writable) return;
       // A stuck ffmpeg must not grow memory without bound.
@@ -812,16 +949,20 @@ function relay(ws) {
     let msg;
     try { msg = JSON.parse(data); } catch { return; }
     if (msg.type === 'stop') { stop(); ws.close(); return; }
-    if (msg.type !== 'start' || ffmpeg) return;
+    if (msg.type !== 'start' || ffmpeg || starting) return;
 
     if (broadcasting && broadcasting !== ws) { stop('Already streaming from another window.'); return; }
+    broadcasting = ws;
+    starting = true;
+    let streamKey;
+    try { streamKey = await keyForStream(); } finally { starting = false; }
+    if (ws.readyState !== 1 || broadcasting !== ws) return;          // stopped or closed meanwhile
+    if (!streamKey) { stop('Add your Twitch stream key first (the layout menu), or sign in with Twitch in the Chat panel.'); return; }
     const s = readJson('settings.json', {});
-    if (!s.streamKey) { stop('Add your Twitch stream key first: layout menu (top left) → Twitch stream key.'); return; }
-    key = s.streamKey;
-    const target = `${ingestOf(s).replace(/\/+$/, '')}/${s.streamKey}${s.testMode ? '?bandwidthtest=true' : ''}`;
+    key = streamKey;
+    const target = `${ingestOf(s).replace(/\/+$/, '')}/${streamKey}${s.testMode ? '?bandwidthtest=true' : ''}`;
 
     ffmpeg = spawn(FFMPEG, ffmpegArgs(msg, target), { stdio: ['pipe', 'ignore', 'pipe'] });
-    broadcasting = ws;
     started = Date.now();
     let lastError = '';
     ffmpeg.stderr.on('data', (chunk) => {

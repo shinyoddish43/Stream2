@@ -14,12 +14,13 @@ try { ({ chromium } = await import(process.env.PLAYWRIGHT_PATH || 'playwright'))
 const skip = !chromium && 'playwright is not installed';
 
 let server, browser, context, page, twitch;
+const HUB_ORIGIN = 'https://sylveon.six7.pw';
 const errors = [];
 
 before(async () => {
   if (skip) return;
   twitch = await fakeTwitch();
-  server = await startServer(twitch.env);
+  server = await startServer({ ...twitch.env, HUB_ORIGIN });
   browser = await chromium.launch({
     executablePath: process.env.CHROMIUM_PATH === '' ? undefined : (process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium'),
     args: ['--no-sandbox', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'],
@@ -518,10 +519,20 @@ test('going live asks for the stream key, then sends the stream to Twitch\'s glo
   await page.fill('#streamKey', 'live_123456_abcdefghij');
   await page.keyboard.press('Enter');
   await until(page, () => !document.getElementById('keyDialog').open);
+  // Saving the key carries on to the title and category; with no Twitch
+  // sign-in they cannot be set here, which the dialog says.
+  await page.waitForSelector('#liveDialog[open]');
+  assert.match(await page.textContent('#liveNote'), /Sign in with Twitch in the Chat panel/);
+  assert.equal(await page.$eval('#liveTitle', (i) => i.disabled), true);
+  await page.click('#liveCancel');
   await page.click('#layoutButton');
   assert.equal(await page.textContent('.menu [data-action=key]'), 'Twitch stream key ✓');
   await page.keyboard.press('Escape');
+  // The key is saved: Start streaming does not ask for it again.
   await page.click('#streamButton');
+  await page.waitForSelector('#liveDialog[open]');
+  assert.equal(await page.$eval('#keyDialog', (d) => d.open), false);
+  await page.click('#liveGo');
   await page.waitForTimeout(4500);
   assert.match(await page.textContent('#streamStatus'), /LIVE/);
   await page.click('#streamButton');                     // confirm() accepted
@@ -778,6 +789,127 @@ test('Twitch chat: writing in it goes out as the account, and what Twitch drops 
   await eventually(() => joins() === 3);
 });
 
+test('Start streaming asks for the title and category, with the hub’s category picker, then goes live', { skip }, async () => {
+  // Signed in with Twitch (the chat tests above): the key is this account's.
+  twitch.channel = { title: 'Any% practice', game_id: '1', game_name: 'Super Metroid' };
+  await page.click('#streamButton');
+  await page.waitForSelector('#liveDialog[open]');
+  await until(page, () => !document.getElementById('liveTitle').disabled);
+  assert.equal(await page.$eval('#keyDialog', (d) => d.open), false, 'no stream key asked for');
+  assert.deepEqual([await page.inputValue('#liveTitle'), await page.inputValue('#liveCategory')], ['Any% practice', 'Super Metroid'], 'what Twitch has now');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'liveTitle');
+
+  // Clicking the category lists the recently used ones; typing searches Twitch.
+  await page.click('#liveCategory');
+  await page.waitForSelector('#liveCategoryList:not([hidden])');
+  assert.deepEqual(await page.$$eval('#liveCategoryList li', (li) => li.map((x) => x.textContent)), ['Recently used', 'Super Metroid']);
+  await page.keyboard.type('metroid');
+  await page.waitForSelector('#liveCategoryList .combo-option >> text=Metroid Prime');
+  assert.equal(await page.textContent('#liveCategoryList .combo-option'), 'Metroid', 'the exact name first');
+  // Arrow keys and Enter pick, as on the hub; Escape closes the list, not the dialog.
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  assert.equal(await page.inputValue('#liveCategory'), 'Metroid Prime');
+  assert.equal(await page.isHidden('#liveCategoryList'), true);
+  await page.keyboard.press('ArrowDown');
+  await page.waitForSelector('#liveCategoryList:not([hidden])');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.isHidden('#liveCategoryList'), true);
+  assert.equal(await page.$eval('#liveDialog', (d) => d.open), true);
+
+  // A category Twitch does not have is refused.
+  await page.fill('#liveCategory', 'not a game at all');
+  await page.click('#liveGo');
+  await page.waitForSelector('#liveError:not([hidden])');
+  assert.equal(await page.textContent('#liveError'), 'Pick a category from the list.');
+  assert.equal(twitch.patches.length, 0);
+
+  await page.fill('#liveCategory', 'metroid prime');           // other capitals are fine
+  await page.fill('#liveTitle', '100% race, come watch');
+  await page.keyboard.press('Enter');
+  await until(page, () => !document.getElementById('liveDialog').open);
+  assert.deepEqual(twitch.patches.at(-1), { broadcaster: '123456', title: '100% race, come watch', game_id: '2' }, 'set on Twitch before going live');
+  await until(page, () => /LIVE/.test(document.getElementById('streamStatus').textContent));
+  const args = readFileSync(join(server.data, 'args.txt'), 'utf8');
+  assert.match(args, /live_123456_fromtwitchKEY0123$/m, 'the key Twitch gave at sign-in');
+  await page.click('#streamButton');
+  await until(page, () => document.getElementById('streamStatus').textContent === 'Offline');
+
+  // Next time the recent list leads with it.
+  await page.click('#streamButton');
+  await until(page, () => !document.getElementById('liveTitle').disabled);
+  await page.click('#liveCategory');
+  assert.deepEqual(await page.$$eval('#liveCategoryList .combo-option', (li) => li.map((x) => x.textContent)), ['Metroid Prime', 'Super Metroid']);
+  await page.keyboard.press('Escape');
+  await page.click('#liveCancel');
+});
+
+test('signed in with Twitch and no key saved yet: the studio fetches it, saves it, and never asks', { skip }, async () => {
+  await page.request.put(`${server.url}/api/settings`, { data: { clearKey: true }, headers: { Origin: server.url } });
+  twitch.streamKey = 'live_123456_resetONtwitch42';
+  await page.reload();
+  await page.waitForSelector('#chatSend:not([hidden])');
+  await page.click('#streamButton');
+  await page.waitForSelector('#liveDialog[open]');
+  assert.equal(await page.$eval('#keyDialog', (d) => d.open), false, 'no stream key asked for');
+  assert.equal(JSON.parse(readFileSync(join(server.data, 'settings.json'), 'utf8')).streamKey, 'live_123456_resetONtwitch42', 'saved before going live');
+  await until(page, () => !document.getElementById('liveTitle').disabled);
+  await page.click('#liveGo');
+  await until(page, () => /LIVE/.test(document.getElementById('streamStatus').textContent));
+  assert.match(readFileSync(join(server.data, 'args.txt'), 'utf8'), /live_123456_resetONtwitch42$/m);
+  assert.equal(JSON.parse(readFileSync(join(server.data, 'settings.json'), 'utf8')).streamKey, 'live_123456_resetONtwitch42', 'saved');
+  await page.click('#streamButton');
+  await until(page, () => document.getElementById('streamStatus').textContent === 'Offline');
+});
+
+test('the hub’s Go live opens the studio and goes live by itself, without asking for anything', { skip }, async () => {
+  // A studio signed in the way t.six7.pw is: the hub's login names the user in
+  // a header. (Its own sign-in cookie is SameSite=Strict, which a window opened
+  // from another site would not carry. The hub and the studio share six7.pw,
+  // so there it does; here the stand-in hub is another site.) Its key is saved.
+  const studioServer = await startServer({ AUTH_HEADER: 'X-Test-User', HUB_ORIGIN }, { password: false });
+  const asOwner = { 'Content-Type': 'application/json', Origin: studioServer.url, 'X-Test-User': 'Oddish' };
+  await fetch(`${studioServer.url}/api/settings`, { method: 'PUT', headers: asOwner, body: JSON.stringify({ streamKey: 'live_123456_savedKEYfromBefore' }) });
+  await context.setExtraHTTPHeaders({ 'X-Test-User': 'Oddish' });
+  // The hub (sylveon.six7.pw), reduced to its Go live: a window named
+  // "fstream" sent to the studio, which says it is ready, then "go live".
+  await context.route(`${HUB_ORIGIN}/**`, (route) => route.fulfill({ contentType: 'text/html', body: `<!doctype html><meta charset="utf-8">
+    <button id="go-live">Go live</button><p id="status"></p>
+    <script>
+      const STUDIO = ${JSON.stringify(studioServer.url)};
+      let win = null;
+      document.getElementById('go-live').onclick = () => { win = window.open(STUDIO + '/', 'fstream'); };
+      addEventListener('message', (e) => {
+        if (e.origin !== STUDIO || e.source !== win) return;
+        if (e.data.type === 'six7-studio-ready') e.source.postMessage({ type: 'six7-golive' }, STUDIO);
+        if (e.data.type === 'six7-golive-ack') document.getElementById('status').textContent = e.data.state;
+      });
+    </script>` }));
+  const hub = await context.newPage();
+  try {
+    await hub.goto(`${HUB_ORIGIN}/`);
+    const opened = context.waitForEvent('page');
+    await hub.click('#go-live');
+    const studio = await opened;
+    await hub.waitForFunction(() => document.getElementById('status').textContent, null, { timeout: 15000 }).catch(() => {});
+    assert.equal(await hub.textContent('#status'), 'starting');
+    await until(studio, () => /LIVE/.test(document.getElementById('streamStatus').textContent));
+    assert.deepEqual(await studio.evaluate(() => [document.getElementById('keyDialog').open, document.getElementById('liveDialog').open]), [false, false],
+      'no stream key and no title asked for: the hub has its own title and category');
+    assert.match(readFileSync(join(studioServer.data, 'args.txt'), 'utf8'), /live_123456_savedKEYfromBefore$/m, 'the saved key');
+    studio.once('dialog', (d) => d.accept());
+    await studio.click('#streamButton');
+    await until(studio, () => document.getElementById('streamStatus').textContent === 'Offline');
+    await studio.close();
+  } finally {
+    await hub.close();
+    await context.setExtraHTTPHeaders({});
+    studioServer.stop();
+  }
+});
+
 test('Twitch chat: only the account the stream key streams to, and signing out stops it', { skip }, async () => {
   // A stream key for another account: the chat goes, and says why.
   await replaceKey('live_999999_someoneelseskey');
@@ -785,12 +917,13 @@ test('Twitch chat: only the account the stream key streams to, and signing out s
   assert.equal(await page.isHidden('#chatBody'), true);
   assert.equal(await page.isHidden('#chatSend'), true);
   assert.equal(await page.evaluate(() => window.studio.chat.ws), null, 'disconnected');
-  // Back to this account's key: back again.
-  await page.click('#chatStepButtons button:has-text("Replace stream key")');
-  await page.fill('#streamKey', 'live_123456_abcdefghij');
-  await page.keyboard.press('Enter');
+  // One click puts this account's own key back (from Twitch), and the chat with it.
+  const before = joins();
+  assert.deepEqual(await page.$$eval('#chatStepButtons button', (b) => b.map((x) => x.textContent)), ['Use Oddish’s stream key', 'Sign in again', 'Replace stream key']);
+  await page.click('#chatStepButtons button:has-text("Use Oddish’s stream key")');
   await page.waitForSelector('#chatSend:not([hidden])');
-  await eventually(() => joins() === 4);
+  await eventually(() => joins() === before + 1);
+  assert.match(JSON.parse(readFileSync(join(server.data, 'settings.json'), 'utf8')).streamKey, /^live_123456_/);
 
   // Signing out, from the ⋯ menu.
   const revoked = twitch.revoked.length;

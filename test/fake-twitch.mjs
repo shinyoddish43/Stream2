@@ -20,6 +20,14 @@ export async function fakeTwitch() {
     refreshFails: false,
     expiresIn: 14000,       // what /validate says is left of the token
     validateFails: false,
+    scopes: ['user:write:chat', 'channel:manage:broadcast', 'channel:read:stream_key'],
+    streamKey: 'live_123456_fromtwitchKEY0123',
+    channel: { title: 'Any% practice', game_id: '1', game_name: 'Super Metroid' },
+    patches: [],            // what the studio asked Twitch to change on the channel
+    games: [
+      { id: '1', name: 'Super Metroid' }, { id: '2', name: 'Metroid Prime' }, { id: '3', name: 'Super Mario 64' },
+      { id: '509658', name: 'Just Chatting' }, { id: '4', name: 'Metroid' }, { id: '5', name: 'Metroid Dread' },
+    ],
     calls: [],
   };
   const issue = () => {
@@ -56,7 +64,7 @@ export async function fakeTwitch() {
           return json(400, { status: 400, message: 'unsupported grant type' });
         case 'GET /oauth2/validate':
           if (t.validateFails || !bearer || bearer !== t.access) return json(401, { status: 401, message: 'invalid access token' });
-          return json(200, { client_id: CLIENT_ID, login: t.user.login, scopes: ['user:write:chat'], user_id: t.user.id, expires_in: t.expiresIn });
+          return json(200, { client_id: CLIENT_ID, login: t.user.login, scopes: t.scopes, user_id: t.user.id, expires_in: t.expiresIn });
         case 'POST /oauth2/revoke':
           t.revoked.push(form.get('token'));
           return json(200, {});
@@ -77,6 +85,38 @@ export async function fakeTwitch() {
           if (!apiOk) return json(401, { status: 401, message: 'Invalid OAuth token' });
           if (url.searchParams.get('broadcaster_id') !== t.user.id) return json(200, { data: [] });
           return json(200, { data: [{ set_id: 'subscriber', versions: [{ id: '0', title: 'Oddish Subscriber', image_url_1x: `${CDN}/badges/v1/oddishsub/1`, image_url_2x: `${CDN}/badges/v1/oddishsub/2` }] }] });
+        case 'GET /helix/streams/key':
+          if (!apiOk) return json(401, { status: 401, message: 'Invalid OAuth token' });
+          if (!t.scopes.includes('channel:read:stream_key')) return json(401, { status: 401, message: 'Missing scope: channel:read:stream_key' });
+          if (url.searchParams.get('broadcaster_id') !== t.user.id) return json(403, { status: 403, message: 'not your channel' });
+          return json(200, { data: [{ stream_key: t.streamKey }] });
+        case 'GET /helix/channels':
+          if (!apiOk) return json(401, { status: 401, message: 'Invalid OAuth token' });
+          return json(200, { data: [{ broadcaster_id: t.user.id, broadcaster_login: t.user.login, ...t.channel }] });
+        case 'PATCH /helix/channels': {
+          if (!apiOk) return json(401, { status: 401, message: 'Invalid OAuth token' });
+          if (!t.scopes.includes('channel:manage:broadcast')) return json(401, { status: 401, message: 'Missing scope: channel:manage:broadcast' });
+          const change = JSON.parse(body || '{}');
+          t.patches.push({ broadcaster: url.searchParams.get('broadcaster_id'), ...change });
+          if (change.title) t.channel.title = change.title;
+          if (change.game_id) {
+            const game = t.games.find((g) => g.id === change.game_id);
+            if (!game) return json(400, { status: 400, message: 'Invalid game_id' });
+            Object.assign(t.channel, { game_id: game.id, game_name: game.name });
+          }
+          res.writeHead(204);
+          return res.end();
+        }
+        case 'GET /helix/search/categories': {
+          if (!apiOk) return json(401, { status: 401, message: 'Invalid OAuth token' });
+          const q = (url.searchParams.get('query') || '').toLowerCase();
+          t.searches = (t.searches || 0) + 1;
+          return json(200, { data: t.games.filter((g) => g.name.toLowerCase().includes(q)).slice(0, Number(url.searchParams.get('first')) || 20).map((g) => ({ ...g, box_art_url: `${CDN}/ttv-boxart/${g.id}-{width}x{height}.jpg` })) });
+        }
+        case 'GET /helix/games': {
+          if (!apiOk) return json(401, { status: 401, message: 'Invalid OAuth token' });
+          return json(200, { data: t.games.filter((g) => g.id === url.searchParams.get('id')) });
+        }
         case 'POST /helix/chat/messages': {
           if (!apiOk) return json(401, { status: 401, message: 'Invalid OAuth token' });
           const msg = JSON.parse(body || '{}');

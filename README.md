@@ -48,7 +48,14 @@ turns what the browser sends into the H.264/AAC stream Twitch wants.
   server (network or sign-in dropped, page closed) are sent on the next visit.
 - **Twitch** — 1280×720 at 30 fps and 4500 kbps to Twitch's global ingest
   (`ingest.global-contribute.live-video.net`); there are no settings. The
-  stream key is kept on the server (never sent back to the browser).
+  stream key is asked for once and kept on the server (never sent back to the
+  browser); signed in with Twitch (see Chat), the studio takes it from Twitch
+  and saves it, so it is never asked for at all, and a key reset on Twitch is
+  picked up when the next stream starts. **Start streaming** asks for the
+  stream title and category first (the category field searches Twitch as you
+  type and offers the three used most recently, as on the six7 hub), sets them
+  on Twitch, then goes live. A hub's **Go live** skips that: the hub has its
+  own title and category.
 
 - **Chat** — the Twitch chat of the account you stream from, under the audio
   mixer, with Twitch's badges and its global emotes (a channel's own emotes,
@@ -186,4 +193,5 @@ npm test
 | `test/install.test.mjs` | the installer against real Caddy and nginx in scratch folders: another site already on the server is kept, a clash or a broken config is rolled back without a reload, reruns are idempotent, IPv6 only where the kernel has it; `push.sh`'s remote command, quoting included; and `deploy/docker/push.sh` shipping the working tree without touching your git index |
 | `test/twitch.test.mjs` | a real ffmpeg pushes to a local RTMP server standing in for Twitch; checks H.264 + AAC, frame rate, and a keyframe every 2 s (skipped without ffmpeg) |
 | `test/chat.test.mjs` | Twitch chat: IRC lines, emote positions, readable name colours, the connection (join signed out, PING, moderators, RECONNECT, retry, a channel Twitch does not have) against a stand-in chat server; and on the server, against a stand-in Twitch (`test/fake-twitch.mjs`): the app's Client ID and secret, the device code sign-in, tokens never leaving the server, sending only as the stream key's account, dropped messages, token renewal, sign-out, the hourly check, global emotes and badges |
-| `test/browser.test.mjs` | the studio in Chromium: the one-column layout, the default mic (meter while muted, a mic from another computer, a blocked mic), sign in, add a device, key a green screen onto an uploaded background and check the pixels, drag, the layout menu, layouts shared with a second browser (live updates, a stale save merged), unsaved changes restored, timer hotkeys, `.lss` round trip, mixer meters, the stream key popup and going live, the chat (set up, sign in, badges and emotes, moderators, a busy chat, writing in it, another account's key, sign-out) (skipped without Playwright) |
+| `test/golive.test.mjs` | the stream key from Twitch (saved at sign-in, kept across restarts, a reset on Twitch followed, another account's key never swapped in silently), and the title and category: what Twitch has, category search, the change made only on the account the key streams to |
+| `test/browser.test.mjs` | the studio in Chromium: the one-column layout, the default mic (meter while muted, a mic from another computer, a blocked mic), sign in, add a device, key a green screen onto an uploaded background and check the pixels, drag, the layout menu, layouts shared with a second browser (live updates, a stale save merged), unsaved changes restored, timer hotkeys, `.lss` round trip, mixer meters, the stream key popup and going live, the chat (set up, sign in, badges and emotes, moderators, a busy chat, writing in it, another account's key, sign-out), Start streaming's title and category picker, going live without being asked for a saved key, and a hub's Go live (skipped without Playwright) |

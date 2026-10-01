@@ -309,7 +309,8 @@ test('signing in with Twitch: a code for twitch.tv/activate, then the account; t
     assert.deepEqual(s.twitch.account, { id: '123456', login: 'oddish', name: 'Oddish' });
     assert.deepEqual([s.twitch.canWrite, s.twitch.pending, s.twitch.problem], [true, null, '']);
     const asked = twitch.calls.find((c) => c.path === '/oauth2/device');
-    assert.equal(new URLSearchParams(asked.body).get('scopes'), 'user:write:chat', 'asks for nothing but writing in the chat');
+    assert.equal(new URLSearchParams(asked.body).get('scopes'), 'user:write:chat channel:manage:broadcast channel:read:stream_key',
+      'asks for writing in the chat, the title and category, and the stream key: nothing else');
     const everything = JSON.stringify((await json('/api/state')).body);
     assert.ok(!/access-|refresh-/.test(everything), 'no token ever reaches the page');
     assert.match(readFileSync(join(server.data, 'settings.json'), 'utf8'), /access-1/, 'kept on the server');
