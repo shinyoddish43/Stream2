@@ -922,7 +922,7 @@ function chatLine(m) {
   const li = document.createElement('li');
   li.dataset.id = m.id;
   li.dataset.login = m.login;
-  li.title = new Date(m.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  li.title = new Date(m.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: 'America/Chicago' });
   if (m.first) { li.classList.add('first'); li.title += ' · first message in this chat'; }
   if (m.action) li.classList.add('action');
   if (chatWanted && new RegExp(`@${chatWanted}\\b`, 'i').test(m.text)) li.classList.add('mention');
