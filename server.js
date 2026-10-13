@@ -72,6 +72,11 @@ for (const entry of String(process.env.TRUST_PROXY || '').split(',').map((s) => 
 const AUTH_HEADER = String(process.env.AUTH_HEADER || '').trim().toLowerCase();
 const AUTH_USERS = new Set(String(process.env.AUTH_USERS || '').split(',').map((s) => s.trim()).filter(Boolean));
 const LOGOUT_URL = process.env.LOGOUT_URL || '';
+const GARDEN_ORIGIN = String(process.env.GARDEN_ORIGIN || '').trim();
+if (GARDEN_ORIGIN && GARDEN_ORIGIN !== 'https://mognet.six7.pw') {
+  console.error('GARDEN_ORIGIN must be exactly https://mognet.six7.pw');
+  process.exit(1);
+}
 const HUB_ORIGIN = String(process.env.HUB_ORIGIN || '').trim();
 if (HUB_ORIGIN) {
   let ok = false;
@@ -249,17 +254,18 @@ function recordFailure(ip) {
 
 // ------------------------------------------------------------------- http
 
-function securityHeaders(res) {
+function securityHeaders(res, url) {
+  const garden = GARDEN_ORIGIN && url.pathname === '/' && url.searchParams.get('garden') === '1';
   res.setHeader('Content-Security-Policy', [
     "default-src 'self'", "script-src 'self'", "style-src 'self'",
     // Twitch chat (public/chat.js): its server, and its emote pictures.
     "img-src 'self' data: blob: https://static-cdn.jtvnw.net",
     "media-src 'self' blob:", "connect-src 'self' wss://irc-ws.chat.twitch.tv", "object-src 'none'", "base-uri 'none'",
-    "frame-ancestors 'none'", "form-action 'self'",
+    `frame-ancestors ${garden ? GARDEN_ORIGIN : "'none'"}`, "form-action 'self'",
   ].join('; '));
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
-  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), display-capture=(self)');
+  res.setHeader('Permissions-Policy', garden ? `camera=(self "${GARDEN_ORIGIN}"), microphone=(self "${GARDEN_ORIGIN}"), display-capture=(self "${GARDEN_ORIGIN}")` : 'camera=(self), microphone=(self), display-capture=(self)');
 }
 
 function send(res, status, body) {
@@ -315,7 +321,7 @@ const ingestOf = (s) => (!s.ingest || s.ingest === LEGACY_INGEST ? DEFAULT_INGES
 
 function publicSettings() {
   const s = readJson('settings.json', {});
-  return { ingest: ingestOf(s), hasKey: !!s.streamKey, testMode: !!s.testMode, hubOrigin: HUB_ORIGIN, twitch: twitchStatus(s) };
+  return { ingest: ingestOf(s), hasKey: !!s.streamKey, testMode: !!s.testMode, hubOrigin: HUB_ORIGIN, gardenOrigin: GARDEN_ORIGIN, twitch: twitchStatus(s) };
 }
 
 // Remove uploads no layout refers to any more. The grace period keeps a file
@@ -330,8 +336,8 @@ function collectMedia(layouts) {
 }
 
 async function route(req, res) {
-  securityHeaders(res);
   const url = new URL(req.url, 'http://local');
+  securityHeaders(res, url);
   const p = url.pathname;
   const method = req.method;
 

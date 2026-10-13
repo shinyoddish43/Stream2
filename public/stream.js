@@ -4,8 +4,9 @@
 const TYPES = ['video/webm;codecs=h264,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
 
 export class Streamer {
-  constructor({ canvas, mixer, onStatus }) {
+  constructor({ canvas, mixer, onStatus, subscribeFrame }) {
     this.canvas = canvas;
+    this.subscribeFrame = subscribeFrame;
     this.mixer = mixer;
     this.onStatus = onStatus;         // ({ state, message, kbps, seconds })
     this.live = false;
@@ -63,6 +64,7 @@ export class Streamer {
 
   record(ws, mimeType, count) {
     const video = this.canvas.captureStream(this.output.fps).getVideoTracks()[0];
+    this.videoTrack = video;
     // Upload a little above the Twitch bitrate: the server re-encodes, and a
     // cleaner input survives that better.
     const upload = Math.min(12000, Math.round(this.output.bitrate * 1.25));
@@ -81,11 +83,18 @@ export class Streamer {
       count(e.data.size);
     };
     this.recorder.start(250);
+    // Explicit frames continue when an embedded canvas is offscreen and
+    // Chrome throttles its automatic capture clock.
+    if (typeof video.requestFrame === 'function') this.releaseFrames = this.subscribeFrame?.(() => video.requestFrame());
   }
 
   stopRecorder() {
+    this.releaseFrames?.();
+    this.releaseFrames = null;
     if (this.recorder && this.recorder.state !== 'inactive') this.recorder.stop();
     this.recorder = null;
+    this.videoTrack?.stop();
+    this.videoTrack = null;
   }
 
   stop() {

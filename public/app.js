@@ -1,3 +1,4 @@
+import { createGardenEmbed } from './garden-embed.js';
 import { Timer, parseLss, buildLss, fmt } from './timer.js';
 import { Compositor, feedKey, openCamera, openScreen } from './compositor.js';
 import { Mixer, openAudioInput } from './mixer.js';
@@ -47,7 +48,7 @@ const compositor = new Compositor($('program'), $('overlay'), {
   onChange: () => save(),
   onSelect: () => { renderSources(); renderGreen(); },
 });
-const streamer = new Streamer({ canvas: $('program'), mixer, onStatus: showStatus });
+const streamer = new Streamer({ canvas: $('program'), mixer, onStatus: showStatus, subscribeFrame:listener=>compositor.subscribeFrame(listener) });
 
 // ----------------------------------------------------------------- model
 
@@ -98,13 +99,17 @@ const selected = () => active().sources.find((s) => s.id === compositor.selected
 
 // ----------------------------------------------------------------- server
 
+let gardenAuthRequired = false;
+const gardenEmbedMode = window.parent !== window && new URLSearchParams(location.search).get('garden') === '1';
+
 async function api(path, options = {}) {
   const res = await fetch(path, { ...options, redirect: 'manual', headers: { 'Content-Type': 'application/json', ...options.headers } });
-  if (res.status === 401) { location.href = '/login'; throw new Error('Signed out.'); }
+  if (res.status === 401) { gardenAuthRequired = true; if (!gardenEmbedMode) location.href = '/login'; throw new Error('Signed out. Sign in in the standalone studio window.'); }
   // Behind the hub login, an expired sign-in comes back as a redirect to it.
-  if (res.type === 'opaqueredirect') throw new Error('Your sign-in has expired. Reload the page to sign in again.');
+  if (res.type === 'opaqueredirect') { gardenAuthRequired = true; throw new Error('Your sign-in has expired. Sign in in the standalone studio window.'); }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(body.error || `Request failed (${res.status})`), { status: res.status, body });
+  gardenAuthRequired = false;
   return body;
 }
 
@@ -1415,10 +1420,12 @@ const livePicker = categoryPicker($('liveCategory'), $('liveCategoryList'));
 // hub opens this studio in a window of its own; when the page is ready it says
 // so to the window that opened it, and only a message from the hub's origin
 // starts the stream. A link alone never starts anything.
+// Garden mode never accepts the hub's automatic go-live messages.
 function hubLink(hubOrigin) {
+  if (window.parent !== window) return;
   if (!hubOrigin) return;
   window.addEventListener('message', async (event) => {
-    if (event.origin !== hubOrigin || !event.data || event.data.type !== 'six7-golive') return;
+    if (event.source !== window.opener || event.origin !== hubOrigin || !event.data || event.data.type !== 'six7-golive') return;
     const reply = (state) => {
       try { event.source.postMessage({ type: 'six7-golive-ack', state }, hubOrigin); } catch { /* hub closed */ }
     };
@@ -1453,7 +1460,9 @@ $('goLiveNow').addEventListener('click', async () => {
 });
 $('goLiveCancel').addEventListener('click', () => { $('goLiveOverlay').hidden = true; });
 
+let gardenStreamStatus = {state:'offline',seconds:0,kbps:0};
 function showStatus({ state, message, kbps, seconds, backlog }) {
+  gardenStreamStatus = {state,seconds:seconds || 0,kbps:kbps || 0};
   const el = $('streamStatus');
   el.dataset.state = state;
   if (state === 'live' && seconds !== undefined) {
@@ -1536,6 +1545,10 @@ async function boot() {
   for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, () => mixer.resume(), true);
   mixer.ctx.addEventListener('statechange', renderMixer);
   hubLink(settings.hubOrigin);
+  createGardenEmbed({origin:settings.gardenOrigin,onVisibility:visible=>compositor.setEmbedVisible(visible),getStatus:()=>({
+    ...gardenStreamStatus,...(gardenAuthRequired?{state:'auth-required'}:{}),broadcast:streamer.live,audio:mixer.ctx.state === 'running',
+    capture:[...compositor.feeds.values()].some(f=>f.stream?.getTracks().some(t=>t.readyState === 'live')) || [...mixer.strips.values()].some(s=>s.track?.readyState === 'live')
+  })});
 }
 
 boot().catch((e) => showStatus({ state: 'error', message: e.message }));

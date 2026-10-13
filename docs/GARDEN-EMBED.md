@@ -1,0 +1,19 @@
+# Garden embed mode — step 4
+
+Branch: `codex/garden-embed-step4`, based on Stream2 `6a5bacb`. Standalone source and owner SSO gate are preserved. No deployment has been performed.
+
+Set `GARDEN_ORIGIN=https://mognet.six7.pw` in the studio deployment environment. The Docker compose file passes this variable to the server. Other values, including a trailing slash, are refused. Unset keeps framing disabled. Only the root document with `?garden=1` allows that exact frame ancestor and capture permissions. Standalone pages and login pages retain their framing restrictions.
+
+Garden delegates camera, microphone, and display capture to `https://t.six7.pw`. Permissions still require browser/user consent; the studio still requires its existing owner sign-in. Sign in through a top-level standalone window before opening the embed. Neither tailnet membership nor the Garden handshake grants studio authentication. Authentication provider redirects cannot reliably be completed inside an iframe.
+
+`garden-fstream-v1` accepts only `hello`, `status` and a boolean `visibility` message from `window.parent`, the exact Garden origin, and a pinned random session. Reply fields are explicitly bounded status: capture/broadcast/audio booleans, state, elapsed seconds, and bitrate. Tokens, keys, chat, source names, and device identifiers are excluded. Garden cannot start or stop a broadcast through this protocol; use the full studio controls. The existing hub go-live handshake is restricted to its opener, and is disabled in embedded windows.
+
+Garden retains one owning iframe outside its DOM patch area and places it over a placeholder inside the panel. Navigating hides its view without removing, reparenting, or reloading the frame. The session-authenticated visibility signal starts the compositor worker even when an offscreen iframe reports `document.hidden=false`. Explicit canvas capture frames keep the recording clock running; capture subscriptions/tracks release on stop. The relay socket and audio context continue. Closing the owning Garden window still ends a browser-produced stream; returning to the standalone studio creates a separate studio, not a transfer of the active capture.
+
+Validated after the final visibility/capture and expiry changes: the full Stream2 suite passed 96/96, including Chromium capture/mixer/hidden compositor and local real-ffmpeg RTMP checks. New exact-origin framing, owner/guest isolation, malformed-origin startup, message source/session/type/shape, and secret-exclusion tests pass. The Garden browser harness separately tests the real studio with synthetic capture and a fake relay; see Garden's evidence document for results. An existing asynchronous sign-in test was made to wait for the account and pending-flow completion together; the initial rerun exposed that fixture race (95/96), the affected chat suite passed 16/16, and the final full suite passed 96/96.
+
+Pending before rollout: reconcile the canonical/live studio tree and coordination log; back up studio data/config; demonstrate real owner SSO, signed-out/expired handling, camera/microphone/screen prompts and a Twitch bandwidth test while switching Garden panels. Never start a public broadcast automatically. A real public broadcast remains an owner action.
+
+The current canonical Six7 Caddy block does not set a framing or Permissions-Policy header, so no proxy change is proposed. Confirm this against live headers/config before deployment. If a proxy edit becomes necessary, follow the Six7 deployment instructions; do not replace the whole Caddyfile.
+
+Rollback: deploy the preceding studio revision or unset `GARDEN_ORIGIN`. Keep the owner-only authentication configuration, proxy address `10.67.0.2`, existing hub origin, volume and settings. Disable the Garden embed first if reverting the studio, so the UI accurately reports that integration is unavailable. No volume or database migration is required.

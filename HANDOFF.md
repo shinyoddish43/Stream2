@@ -202,3 +202,7 @@ desktop sound rule:
   `deploy/install.sh` and `push.sh` remain for VPSes whose web server runs
   on the host; they were not used for six7.
 - Known limit: timer hotkeys only fire while the studio tab has focus.
+
+## Garden step 4 (local, not deployed)
+
+Prepared exact-origin full-studio embed mode and a status-only session protocol on `codex/garden-embed-step4`. Standalone hub go-live still works, and embedded studios cannot receive hub go-live messages. Full suite: 96/96 including Chromium and real ffmpeg. See `docs/GARDEN-EMBED.md` for configuration, remaining live checks and rollback. Garden runtime integration waits for step 1.

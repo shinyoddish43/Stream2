@@ -183,6 +183,8 @@ export class Compositor {
     this.selected = null;
     this.drag = null;
     this.lastFrame = 0;
+    this.embedVisible = true;
+    this.frameListeners = new Set();
     this.bindPointer();
   }
 
@@ -223,13 +225,25 @@ export class Compositor {
 
   // ---------------------------------------------------------------- drawing
 
+  setEmbedVisible(visible) {
+    if (this.embedVisible === visible) return;
+    this.embedVisible = visible;
+    this.onVisibility?.();
+  }
+
+  subscribeFrame(listener) {
+    this.frameListeners.add(listener);
+    return () => this.frameListeners.delete(listener);
+  }
+
   start() {
+    const hidden = () => document.hidden || !this.embedVisible;
     // requestAnimationFrame stops in a background tab and ordinary timers are
     // throttled to once a second, either of which would freeze the stream.
     // A worker's timer is not throttled, so it drives frames while hidden.
     const ticker = new Worker('/ticker.js');
     ticker.onmessage = () => {
-      if (!document.hidden) return;
+      if (!hidden()) return;
       const started = performance.now();
       this.frame();
       // Ask for the next tick only now, so there is never more than one queued.
@@ -237,14 +251,15 @@ export class Compositor {
     };
     let looping = false;             // one animation loop, however often visibility flips
     const loop = (now) => {
-      if (document.hidden) { looping = false; return; }
+      if (hidden()) { looping = false; return; }
       if (now - this.lastFrame >= 1000 / this.fps() - 2) { this.lastFrame = now; this.frame(); }
       requestAnimationFrame(loop);
     };
     const onVisibility = () => {
-      ticker.postMessage(document.hidden ? 1000 / this.fps() : 0);
-      if (!document.hidden && !looping) { looping = true; requestAnimationFrame(loop); }
+      ticker.postMessage(hidden() ? 1000 / this.fps() : 0);
+      if (!hidden() && !looping) { looping = true; requestAnimationFrame(loop); }
     };
+    this.onVisibility = onVisibility;
     document.addEventListener('visibilitychange', onVisibility);
     onVisibility();
   }
@@ -254,7 +269,7 @@ export class Compositor {
     const layout = this.layout();
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, program.width, program.height);
-    if (!layout) return;
+    if (!layout) { for (const fn of this.frameListeners) fn(); return; }
     const snapshot = this.timer.snapshot();
     for (const src of layout.sources) {
       if (!src.visible) continue;
@@ -265,6 +280,7 @@ export class Compositor {
       else ctx.drawImage(feed.video, src.x, src.y, src.w, src.h);
     }
     this.drawOverlay(layout);
+    for (const fn of this.frameListeners) fn();
   }
 
   drawKeyed(src, feed) {
@@ -330,7 +346,7 @@ export class Compositor {
     el.addEventListener('pointerdown', (e) => {
       const p = at(e);
       const layout = this.layout();
-      if (!layout) return;
+      if (!layout) { for (const fn of this.frameListeners) fn(); return; }
       const sel = layout.sources.find((x) => x.id === this.selected);
       const grab = 14 * this.scale();
       if (sel) {

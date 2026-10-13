@@ -305,7 +305,7 @@ test('signing in with Twitch: a code for twitch.tv/activate, then the account; t
     await wait(500);
     assert.ok((await json('/api/settings')).body.twitch.pending, 'still waiting for the owner');
     twitch.pending = false;
-    const s = await eventually(async () => { const b = (await json('/api/settings')).body; return b.twitch.account && b; });
+    const s = await eventually(async () => { const b = (await json('/api/settings')).body; return b.twitch.account && !b.twitch.pending && b; });
     assert.deepEqual(s.twitch.account, { id: '123456', login: 'oddish', name: 'Oddish' });
     assert.deepEqual([s.twitch.canWrite, s.twitch.pending, s.twitch.problem], [true, null, '']);
     const asked = twitch.calls.find((c) => c.path === '/oauth2/device');
