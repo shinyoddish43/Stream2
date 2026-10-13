@@ -7,7 +7,7 @@ export class Timer {
   }
 
   load(run) {
-    this.run = normalize(run);
+    this.run = normalizeRun(run);
     this.phase = 'idle';            // idle | running | paused | ended
     this.times = this.run.segments.map(() => null);   // cumulative seconds per split
     this.index = 0;
@@ -16,6 +16,7 @@ export class Timer {
     this.pausedTotal = 0;
     this.endedAt = 0;
     this.recorded = false;          // this attempt is already folded into the splits
+    this.finishBackup = null;
   }
 
   // Seconds on the clock. performance.now(), so a system clock change cannot
@@ -35,6 +36,7 @@ export class Timer {
       this.times = this.run.segments.map(() => null);
       this.run.attempts = (this.run.attempts || 0) + 1;
       this.recorded = false;
+      this.finishBackup = null;
       return 'start';
     }
     if (this.phase !== 'running') return null;
@@ -44,6 +46,7 @@ export class Timer {
     if (this.index >= this.run.segments.length) {
       this.phase = 'ended';
       this.endedAt = performance.now();
+      this.finishBackup = { pb: this.run.pb, splits: this.run.segments.map((s) => s.pb), history: [...this.run.history] };
       this.record();
       return 'finish';
     }
@@ -51,9 +54,15 @@ export class Timer {
   }
 
   undo() {
+    const finished = this.phase === 'ended';
     if (this.phase === 'ended') {
       // A misclicked last split: withdraw the finish, keep any golds earned.
-      if (this.recorded && this.run.history.length) this.run.history.pop();
+      if (this.finishBackup) {
+        this.run.pb = this.finishBackup.pb;
+        this.run.segments.forEach((s, i) => { s.pb = this.finishBackup.splits[i]; });
+        this.run.history = this.finishBackup.history;
+        this.finishBackup = null;
+      }
       this.recorded = false;
       this.phase = 'running';
       this.startedAt += performance.now() - this.endedAt;
@@ -61,6 +70,7 @@ export class Timer {
       return;
     }
     this.times[--this.index] = null;
+    return finished ? 'undo-finish' : 'undo';
   }
 
   skip() {
@@ -79,6 +89,7 @@ export class Timer {
     this.phase = 'idle';
     this.index = 0;
     this.times = this.run.segments.map(() => null);
+    this.finishBackup = null;
   }
 
   record() {
@@ -169,7 +180,7 @@ export class Timer {
   }
 }
 
-function normalize(run) {
+export function normalizeRun(run) {
   const r = run || {};
   const segments = (Array.isArray(r.segments) && r.segments.length ? r.segments : [{ name: 'Split 1' }, { name: 'Split 2' }, { name: 'Finish' }])
     .map((s, i) => ({ name: String(s.name || `Split ${i + 1}`), pb: num(s.pb), best: num(s.best), comparisons: s.comparisons || {} }));
@@ -177,7 +188,7 @@ function normalize(run) {
     game: r.game || 'Untitled', category: r.category || 'Any%',
     attempts: Number(r.attempts) || 0, offset: Number(r.offset) || 0,
     platform: r.platform || '', region: r.region || '', variables: r.variables || {},
-    history: Array.isArray(r.history) ? r.history : [],
+    history: Array.isArray(r.history) ? structuredClone(r.history) : [],
     segments,
     pb: num(r.pb) ?? segments[segments.length - 1].pb,
   };
@@ -190,11 +201,13 @@ const num = (v) => (v === null || v === undefined || v === '' || !Number.isFinit
 export function fmt(seconds, decimals = 0, sign = false) {
   if (seconds === null || seconds === undefined) return '—';
   const neg = seconds < 0;
-  let s = Math.abs(seconds);
+  const factor = 10 ** decimals;
+  const ticks = decimals ? Math.round(Math.abs(seconds) * factor) : Math.floor(Math.abs(seconds));
+  const s = ticks / factor;
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
-  s %= 60;
-  const sec = decimals ? s.toFixed(decimals).padStart(decimals + 3, '0') : String(Math.floor(s)).padStart(2, '0');
+  const part = (ticks % (60 * factor)) / factor;
+  const sec = decimals ? part.toFixed(decimals).padStart(decimals + 3, '0') : String(part).padStart(2, '0');
   const body = h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
   return (neg ? '-' : sign ? '+' : '') + body;
 }
@@ -300,10 +313,11 @@ export function parseTime(text) {
 }
 
 export function formatTime(seconds) {
-  const s = Math.abs(seconds);
+  const ticks = Math.round(Math.abs(seconds) * 1e7);
+  const s = ticks / 1e7;
   const hh = String(Math.floor(s / 3600)).padStart(2, '0');
   const mm = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
-  return `${seconds < 0 ? '-' : ''}${hh}:${mm}:${(s % 60).toFixed(7).padStart(10, '0')}`;
+  return `${seconds < 0 ? '-' : ''}${hh}:${mm}:${((ticks % 600000000) / 1e7).toFixed(7).padStart(10, '0')}`;
 }
 
 /** LiveSplit .lss text -> run. Keeps comparisons and attempt history intact. */

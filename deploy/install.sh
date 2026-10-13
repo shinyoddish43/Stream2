@@ -168,7 +168,7 @@ main() {
   id streamstudio >/dev/null 2>&1 || useradd --system --home-dir "$DATA" --shell /usr/sbin/nologin streamstudio
   mkdir -p "$APP" "$DATA"
   rm -rf "$APP/public"
-  cp -r "$SRC/server.js" "$SRC/package.json" "$SRC/package-lock.json" "$SRC/public" "$APP/"
+  cp -r "$SRC/server.js" "$SRC/audiobooks.js" "$SRC/package.json" "$SRC/package-lock.json" "$SRC/public" "$APP/"
   (cd "$APP" && npm ci --omit=dev --no-audit --no-fund --silent)
   chown -R root:root "$APP"
   chown -R streamstudio:streamstudio "$DATA"

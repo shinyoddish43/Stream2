@@ -94,6 +94,35 @@ test('undoing a finish withdraws its record', () => {
   assert.equal(t.run.history.length, 0);
 });
 
+test('undoing an accidental PB restores comparisons before a corrected finish', () => {
+  const t = new Timer();
+  t.load(run());
+  t.split(); at(t, 8); t.split(); at(t, 25); t.split(); at(t, 40); t.split();
+  assert.equal(t.run.pb, 40);
+  assert.equal(t.undo(), 'undo-finish');
+  assert.equal(t.run.pb, 60);
+  assert.deepEqual(t.run.segments.map((s) => s.pb), [10, 30, 60]);
+  assert.deepEqual(t.run.segments.map((s) => s.best), [8, 17, 15], 'earned golds remain');
+  at(t, 70); t.split();
+  assert.equal(t.run.pb, 60, 'the accidental PB must not survive the correction');
+  assert.equal(t.run.history.at(-1).real, 70);
+  t.undo(); at(t, 50); t.split();
+  assert.equal(t.run.pb, 50, 'a corrected genuine PB can still be recorded');
+});
+
+test('withdrawing a finish restores capped history and a previously unset PB', () => {
+  const t = new Timer();
+  const history = Array.from({ length: 500 }, (_, id) => ({ id, real: null }));
+  t.load({ attempts: 500, history, segments: [{ name: 'Finish', best: null }] });
+  t.split(); at(t, 10); t.split(); t.undo();
+  assert.equal(t.run.pb, null);
+  assert.equal(t.run.segments[0].pb, null);
+  assert.deepEqual(t.run.history, history, 'undo also recovers the oldest capped entry');
+  t.reset();
+  assert.equal(t.run.history.at(-1).real, null);
+  assert.equal(t.run.history.length, 500);
+});
+
 test('delta colours follow LiveSplit', () => {
   const t = new Timer();
   t.load(run());
@@ -133,4 +162,15 @@ test('time formatting and .lss time parsing', () => {
   assert.equal(parseTime('1.00:00:10'), 86410);
   assert.equal(parseTime(''), null);
   assert.equal(formatTime(3723.5), '01:02:03.5000000');
+});
+
+test('rounded timer and LSS durations carry across minutes and hours', () => {
+  assert.equal(fmt(59.999, 2), '1:00.00');
+  assert.equal(fmt(3599.999, 2), '1:00:00.00');
+  assert.equal(fmt(-59.999, 2), '-1:00.00');
+  assert.equal(fmt(59.999), '0:59', 'whole-second display still truncates');
+  assert.equal(fmt(59.994, 2), '0:59.99');
+  assert.equal(formatTime(59.99999999), '00:01:00.0000000');
+  assert.equal(formatTime(3599.99999999), '01:00:00.0000000');
+  assert.equal(parseTime(formatTime(59.99999999)), 60);
 });

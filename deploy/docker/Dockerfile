@@ -7,7 +7,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
-COPY server.js ./
+COPY server.js audiobooks.js ./
 COPY public ./public
 # Inside the container it listens on its own networks; who may reach it is
 # decided by those networks (see compose.yaml), not by the listen address.

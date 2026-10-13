@@ -1,11 +1,16 @@
 // Audio mixer: every input gets a gain, a mute and a meter, and they all sum
 // into the one audio track that goes out with the stream.
 
+import { SpeakerMonitor } from './speaker-monitor.js';
+
 export class Mixer {
   constructor() {
     this.ctx = new AudioContext();
     this.out = this.ctx.createMediaStreamDestination();
     this.strips = new Map();
+    this.monitorOut = this.ctx.createMediaStreamDestination();
+    this.monitor = new SpeakerMonitor(this.monitorOut.stream);
+    this.elementSources = new WeakMap();
     this.buffer = new Float32Array(1024);
   }
 
@@ -25,17 +30,34 @@ export class Mixer {
     const track = stream.getAudioTracks()[0];
     if (!track) return null;
     const source = this.ctx.createMediaStreamSource(new MediaStream([track]));
-    const gainNode = this.ctx.createGain();   // the volume slider
-    const muteNode = this.ctx.createGain();   // the mute button
+    return this.addSource(id, source, { label, gain, muted, track, owned });
+  }
+
+  addMedia(id, element, options = {}) {
+    let source = this.elementSources.get(element);
+    if (!source) {
+      source = this.ctx.createMediaElementSource(element);
+      this.elementSources.set(element, source);
+    }
+    this.remove(id);
+    return this.addSource(id, source, { ...options, owned: false, media: true });
+  }
+
+  addSource(id, source, { label, gain = 1, muted = false, track, owned = false, media = false, monitorGain = 0.7, monitor = true }) {
+    const gainNode = this.ctx.createGain();
     const analyser = this.ctx.createAnalyser();
     analyser.fftSize = 2048;
-    // The meter reads after the volume but before the mute, so a muted input
-    // still shows that it is alive.
     source.connect(gainNode);
     gainNode.connect(analyser);
-    gainNode.connect(muteNode);
-    muteNode.connect(this.out);
-    const strip = { id, label, gain, muted, source, gainNode, muteNode, analyser, track, owned, peak: 0 };
+    gainNode.connect(this.out);
+    const strip = { id, label, gain, muted, source, gainNode, analyser, track, owned, peak: 0, media, blocked: false };
+    if (media) {
+      strip.monitorGain = monitorGain;
+      strip.monitor = monitor;
+      strip.monitorNode = this.ctx.createGain();
+      source.connect(strip.monitorNode);
+      strip.monitorNode.connect(this.monitorOut);
+    }
     this.strips.set(id, strip);
     this.apply(strip);
     return strip;
@@ -46,22 +68,26 @@ export class Mixer {
     if (!strip) return;
     strip.source.disconnect();
     strip.gainNode.disconnect();
-    strip.muteNode.disconnect();
+    strip.analyser.disconnect();
+    strip.monitorNode?.disconnect();
     if (strip.owned) strip.track.stop();
     this.strips.delete(id);
   }
 
-  set(id, { gain, muted }) {
+  set(id, { gain, muted, monitorGain, monitor, blocked }) {
     const strip = this.strips.get(id);
     if (!strip) return;
     if (gain !== undefined) strip.gain = gain;
     if (muted !== undefined) strip.muted = muted;
+    if (monitorGain !== undefined) strip.monitorGain = monitorGain;
+    if (monitor !== undefined) strip.monitor = monitor;
+    if (blocked !== undefined) strip.blocked = blocked;
     this.apply(strip);
   }
 
   apply(strip) {
-    strip.gainNode.gain.setTargetAtTime(strip.gain, this.ctx.currentTime, 0.01);
-    strip.muteNode.gain.setTargetAtTime(strip.muted ? 0 : 1, this.ctx.currentTime, 0.01);
+    strip.monitorNode?.gain.setTargetAtTime(strip.monitor ? strip.monitorGain : 0, this.ctx.currentTime, 0.01);
+    strip.gainNode.gain.setTargetAtTime((strip.muted || strip.blocked) ? 0 : strip.gain, this.ctx.currentTime, 0.01);
   }
 
   /** Peak level per strip, 0..1, decaying so the meters are readable. */
@@ -78,26 +104,12 @@ export class Mixer {
   }
 }
 
-/** Open an audio input with nothing applied: capture-card audio and a stream
- *  mic both want the raw signal, not a video-call filter. "default" is the
- *  default microphone of this browser and device, whichever that is. Other
- *  device ids differ between browsers and devices, so one saved elsewhere is
- *  found by its name; never by guessing, which could put the wrong microphone
- *  on stream. */
-export async function openAudioInput(deviceId, label) {
-  const open = (id) => navigator.mediaDevices.getUserMedia({
+/** Echo cancellation is for microphones; select Raw for a capture card. */
+export function openAudioInput(deviceId, mode = 'echo') {
+  return navigator.mediaDevices.getUserMedia({
     audio: {
-      deviceId: id ? { exact: id } : undefined,
-      echoCancellation: false, noiseSuppression: false, autoGainControl: false,
+      deviceId: deviceId ? { exact: deviceId } : undefined,
+      echoCancellation: mode !== 'raw', noiseSuppression: mode !== 'raw', autoGainControl: false,
     },
   });
-  if (!deviceId || deviceId === 'default') return open(undefined);
-  try {
-    return await open(deviceId);
-  } catch (e) {
-    if (!deviceId || !label || !['OverconstrainedError', 'NotFoundError'].includes(e.name)) throw e;
-    const same = (await navigator.mediaDevices.enumerateDevices()).find((d) => d.kind === 'audioinput' && d.label === label && d.deviceId !== deviceId);
-    if (!same) throw e;
-    return open(same.deviceId);
-  }
 }

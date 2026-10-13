@@ -2,42 +2,20 @@ import { Timer, parseLss, buildLss, fmt } from './timer.js';
 import { Compositor, feedKey, openCamera, openScreen } from './compositor.js';
 import { Mixer, openAudioInput } from './mixer.js';
 import { Streamer } from './stream.js';
-import { TwitchChat, channelName, emoteUrl } from './chat.js';
+import { SplitsStore } from './splits-store.js';
+import { MediaPlayer, mediaDefaults } from './media-player.js';
 
 const $ = (id) => document.getElementById(id);
 const uid = () => Math.random().toString(36).slice(2, 10);
 const HOTKEYS = { split: 'Split / start', undo: 'Undo', skip: 'Skip', pause: 'Pause', reset: 'Reset' };
-const CHROMA_DEFAULTS = { enabled: false, color: '#00ff00', background: null, backgroundType: null };
-// What goes to Twitch, fixed: 720p30 at 4500 kbps suits a browser encoder and
-// the server's re-encode, and needs about 6 Mbps of upload.
-const OUTPUT = { width: 1280, height: 720, fps: 30, bitrate: 4500 };
-// An audio input saved as DEFAULT_MIC is the default microphone of whichever
-// browser and device the studio runs on, so it works everywhere.
-const DEFAULT_MIC = 'default';
-const NOT_HERE = 'not connected';
-// Any other input belongs to the computer it was added on (a random id kept in
-// this browser). Another computer leaves it out instead of calling it missing.
-const ELSEWHERE = 'on another computer';
-const computer = (() => {
-  try {
-    let id = localStorage.getItem('studio.computer');
-    if (!id) { id = uid() + uid(); localStorage.setItem('studio.computer', id); }
-    return id;
-  } catch { return ''; }   // storage off: inputs stay unclaimed, as before
-})();
-const STOPPED = 'stopped. It was unplugged, or the computer’s sound system restarted';
-// Changes not yet on the server, kept in this browser until they are.
-const STASH = 'studio.unsaved';
-const clientId = uid();
+// Similarity and smoothness are relative to the key colour: 0 is the key, 1 is
+// grey. These defaults key a typical green screen and leave people alone.
+const CHROMA_DEFAULTS = { enabled: false, color: '#00ff00', similarity: 0.5, smoothness: 0.2, background: null, backgroundType: null };
+const TWITCH_INGEST = 'rtmp://ingest.global-contribute.live-video.net/app';
 
 let doc;                  // layouts, audio inputs, output and hotkeys; saved to the server
 let settings;             // Twitch settings as the server reports them (never the key itself)
-let rev = 0;              // the server's revision of the layouts this page is working on
-let dirty = false;        // changes the server does not have yet
-let edits = 0;            // counts changes, to tell whether one came in during a save
-let saving = null;        // the save in flight
-const deletedLayouts = new Set();
-const missingAudio = new Map();   // audio input id -> why it could not be opened here
+const missingAudio = new Set();
 const timer = new Timer();
 const mixer = new Mixer();
 const compositor = new Compositor($('program'), $('overlay'), {
@@ -45,9 +23,11 @@ const compositor = new Compositor($('program'), $('overlay'), {
   timer,
   fps: () => doc.output.fps,
   onChange: () => save(),
-  onSelect: () => { renderSources(); renderGreen(); },
+  onSelect: () => { renderSources(); renderGreenscreen(); },
 });
 const streamer = new Streamer({ canvas: $('program'), mixer, onStatus: showStatus });
+const media = new MediaPlayer({ mixer, state: () => doc.media, save, api, changed: mediaChanged });
+let speakersPlaying = false, speakerTailTimer;
 
 // ----------------------------------------------------------------- model
 
@@ -55,10 +35,11 @@ function defaultDoc() {
   const id = uid();
   return {
     version: 2,
-    output: { ...OUTPUT },
+    revision: 0,
+    output: { width: 1280, height: 720, fps: 30, bitrate: 4500 },
     hotkeys: { split: 'Numpad1', undo: 'Numpad8', skip: 'Numpad2', pause: 'Numpad5', reset: 'Numpad3' },
-    // Like OBS's Mic/Aux, a new studio starts with the default microphone.
-    audio: [{ id: uid(), deviceId: DEFAULT_MIC, label: 'Default microphone', gain: 1, muted: false }],
+    audio: [],
+    media: mediaDefaults(),
     screenAudio: { gain: 1, muted: false },
     active: id,
     layouts: [{ id, name: 'Main', sources: [timerSource(1280, 720)] }],
@@ -73,21 +54,13 @@ function timerSource(W, H) {
 function migrate(saved) {
   const base = defaultDoc();
   if (!saved || !Array.isArray(saved.layouts) || !saved.layouts.length) return base;
-  const { rev: _rev, savedAt: _at, savedBy: _by, ...rest } = saved;
-  const d = { ...base, ...structuredClone(rest), output: { ...OUTPUT }, hotkeys: { ...base.hotkeys, ...rest.hotkeys } };
+  const d = { ...base, ...saved, output: { ...base.output, ...saved.output }, hotkeys: { ...base.hotkeys, ...saved.hotkeys } };
+  d.media = mediaDefaults(saved.media);
+  d.audio = (Array.isArray(d.audio) ? d.audio : []).map((a) => ({ ...a, mode: ['raw', 'echo', 'guard'].includes(a.mode) ? a.mode : 'echo' }));
   if (!d.layouts.some((l) => l.id === d.active)) d.active = d.layouts[0].id;
-  // Layouts made at another size (there used to be a setting) keep their proportions.
-  const k = OUTPUT.width / (Number(rest.output && rest.output.width) || OUTPUT.width);
-  for (const l of d.layouts) {
-    if (k !== 1) for (const s of l.sources) for (const p of ['x', 'y', 'w', 'h']) s[p] = Math.round(s[p] * k);
-    for (const s of l.sources) {
-      if (s.type !== 'camera') continue;
-      // Cameras open at fixed defaults, and keying strength is fixed: only
-      // on/off, the colour and the background are settings.
-      const { enabled, color, background, backgroundType } = { ...CHROMA_DEFAULTS, ...s.chroma };
-      s.chroma = { enabled, color, background, backgroundType };
-      delete s.resolution;
-    }
+  for (const l of d.layouts) for (const s of l.sources) if (s.type === 'camera') {
+    s.resolution = '1080p';
+    s.chroma = { ...CHROMA_DEFAULTS, ...s.chroma, similarity: 0.5, smoothness: 0.2 };
   }
   return d;
 }
@@ -108,165 +81,173 @@ async function api(path, options = {}) {
   return body;
 }
 
-// ------------------------------------------------------------------ saving
-//
-// Every change is kept in this browser at once and sent to the server half a
-// second later, and again every few seconds until the server has it. The
-// server keeps one copy for every browser and device; each save names the
-// revision it was based on, so a page that fell behind is told instead of
-// overwriting newer work, and open pages pick up changes made elsewhere.
+const DRAFT_KEY = 'fstream-layout-draft';
+let saveTimer, saving, savedDoc, syncing = false;
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const content = (value) => { const { revision, ...rest } = value; return rest; };
+const dirty = () => doc && !same(content(doc), content(savedDoc));
 
-let saveTimer;
+function saveState(message, state = 'saved') {
+  $('saveStatus').textContent = message;
+  $('saveStatus').dataset.state = state;
+}
+
+function cacheDraft() {
+  try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ doc, base: savedDoc })); } catch { /* Server saves still work without browser storage. */ }
+}
+
+function clearDraft(snapshot) {
+  try {
+    const cached = JSON.parse(localStorage.getItem(DRAFT_KEY));
+    if (cached && same(content(cached.doc), content(snapshot))) localStorage.removeItem(DRAFT_KEY);
+  } catch { /* Storage may be unavailable. */ }
+}
+
 function save() {
-  dirty = true;
-  edits++;
-  stash();
-  showSave('pending', 'Saving…');
+  if (!doc) return;
+  cacheDraft();
+  saveState('Saving...', 'pending');
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(flush, 500);
+  saveTimer = setTimeout(() => flush(), 350);
 }
 
-function stash() {
-  try { localStorage.setItem(STASH, JSON.stringify({ base: rev, client: clientId, at: Date.now(), doc })); } catch { /* storage off: the server copy is all there is */ }
-}
-function readStash() {
-  try { return JSON.parse(localStorage.getItem(STASH)); } catch { return null; }
-}
-function dropStash(onlyOurs = true) {
-  try { if (!onlyOurs || (readStash() || {}).client === clientId) localStorage.removeItem(STASH); } catch { /* storage off */ }
-}
-
-function flush() {
-  clearTimeout(saveTimer);
-  if (saving) return saving;
-  if (!dirty) return Promise.resolve();
-  saving = (async () => {
-    let conflicts = 0;
-    while (dirty) {
-      const sent = edits;
-      const body = JSON.stringify({ ...doc, rev, savedBy: clientId });
-      try {
-        // keepalive lets a save started as the page closes still arrive.
-        const res = await api('/api/layouts', { method: 'PUT', body, keepalive: body.length < 60000 });
-        rev = res.rev;
-        if (edits === sent) { dirty = false; dropStash(); } else stash();
-      } catch (e) {
-        if (e.status === 409 && e.body && typeof e.body.rev === 'number' && ++conflicts <= 3) {
-          // Saved elsewhere since this page loaded. This page's changes are
-          // the newest, but keep any layout made there in the meantime.
-          rev = e.body.rev;
-          for (const l of migrate(e.body.doc).layouts) {
-            if (!doc.layouts.some((x) => x.id === l.id) && !deletedLayouts.has(l.id)) doc.layouts.push(l);
-          }
-          stash();
-          renderLayouts();
-          continue;
-        }
-        showSave('error', `Not saved: ${e.message}`);
-        return;
-      }
+// Merge independent edits; keep both versions when two browsers edit a layout.
+function recoverLayouts(local, base, remote) {
+  const merged = structuredClone(remote);
+  const ids = new Map();
+  let recovered = false;
+  for (const layout of local.layouts) {
+    const original = base.layouts.find((l) => l.id === layout.id);
+    const other = remote.layouts.find((l) => l.id === layout.id);
+    if (same(layout, original) || same(layout, other)) continue;
+    if (same(other, original)) {
+      merged.layouts = merged.layouts.filter((l) => l.id !== layout.id);
+      merged.layouts.push(structuredClone(layout));
+    } else {
+      const copy = structuredClone(layout);
+      copy.id = uid();
+      copy.name += ' (recovered)';
+      copy.sources.forEach((s) => { s.id = uid(); });
+      merged.layouts.push(copy);
+      ids.set(layout.id, copy.id);
+      recovered = true;
     }
-    showSave('saved', 'Saved');
-  })().finally(() => { saving = null; });
-  return saving;
+  }
+  for (const original of base.layouts) {
+    if (!local.layouts.some((l) => l.id === original.id)) {
+      merged.layouts = merged.layouts.filter((l) => l.id !== original.id || !same(l, original));
+    }
+  }
+  for (const key of ['output', 'hotkeys', 'audio', 'screenAudio', 'media', 'active']) {
+    if (!same(local[key], base[key])) merged[key] = structuredClone(local[key]);
+  }
+  if (ids.has(local.active)) merged.active = ids.get(local.active);
+  if (!merged.layouts.length) merged.layouts = structuredClone(local.layouts);
+  if (!merged.layouts.some((l) => l.id === merged.active)) merged.active = merged.layouts[0].id;
+  return { doc: merged, recovered };
 }
 
-function showSave(state, text) {
-  const el = $('saveState');
-  el.dataset.state = state;
-  el.textContent = text;
-  el.title = state === 'error' ? `${text}. Kept in this browser; retrying every few seconds.` : '';
-}
-
-// Changes from another browser or device, while this page has none of its own.
-async function pull() {
-  if (!doc || dirty || saving || compositor.drag || document.hidden) return;
-  let res;
-  try { res = await api(`/api/layouts?since=${rev}`); } catch { return; }
-  if (!res.doc || res.rev === rev || dirty || saving || compositor.drag) return;
-  adopt(res.doc, res.rev);
-}
-
-function adopt(saved, savedRev) {
-  const shown = doc.active;
-  doc = migrate(saved);
-  rev = savedRev;
-  if (doc.layouts.some((l) => l.id === shown)) doc.active = shown;       // this window keeps its layout
-  if (!active().sources.some((s) => s.id === compositor.selected)) compositor.selected = null;
+function applyDocument(next) {
+  doc = next;
+  compositor.select(null);
+  compositor.resize(doc.output.width, doc.output.height);
   compositor.prune(allSources());
-  if (!allSources().some((s) => s.type === 'screen')) mixer.remove('screen');
-  allSources().filter((s) => s.type === 'camera').forEach(startCamera);
-  for (const id of [...mixer.strips.keys()]) if (id !== 'screen' && !doc.audio.some((a) => a.id === id)) mixer.remove(id);
-  for (const a of doc.audio) mixer.set(a.id, a);
+  active().sources.filter((s) => s.type === 'camera').forEach(startCamera);
+  for (const id of mixer.strips.keys()) if (id !== 'screen' && id !== 'media') mixer.remove(id);
   mixer.set('screen', doc.screenAudio);
-  for (const id of missingAudio.keys()) if (!doc.audio.some((a) => a.id === id)) missingAudio.delete(id);
+  media.restore();
+  missingAudio.clear();
   openSavedAudio();
   renderAll();
 }
 
-const saveSplits = () => api('/api/splits', { method: 'PUT', body: JSON.stringify(timer.run) }).catch((e) => showStatus({ state: 'error', message: `Splits not saved: ${e.message}` }));
-
-// ------------------------------------------------------------------ menus
-
-let openMenu = null;
-
-function closeMenu() {
-  if (!openMenu) return;
-  openMenu.el.remove();
-  openMenu.anchor.setAttribute('aria-expanded', 'false');
-  openMenu = null;
-}
-
-/** A drop-down under `anchor`. Items: { label, run, checked?, action?, danger? } or '-'. */
-function showMenu(anchor, items) {
-  const again = openMenu && openMenu.anchor === anchor;
-  closeMenu();
-  if (again) return;                    // a second click on the button closes it
-  const el = document.createElement('div');
-  el.className = 'menu';
-  el.setAttribute('role', 'menu');
-  for (const item of items) {
-    if (item === '-') { el.append(document.createElement('hr')); continue; }
-    const b = Object.assign(document.createElement('button'), { type: 'button', textContent: item.label, title: item.label });
-    b.setAttribute('role', item.checked === undefined ? 'menuitem' : 'menuitemradio');
-    if (item.checked !== undefined) b.setAttribute('aria-checked', String(item.checked));
-    if (item.action) b.dataset.action = item.action;
-    if (item.danger) b.className = 'danger';
-    b.addEventListener('click', () => { closeMenu(); item.run(); });
-    el.append(b);
+async function flush(keepalive = false) {
+  clearTimeout(saveTimer);
+  if (!doc) return;
+  // A closing page can send the newest draft even while an older save is pending.
+  // The revision check prevents either request from overwriting a newer save.
+  if (saving) {
+    if (keepalive && dirty()) {
+      cacheDraft();
+      api('/api/layouts', { method: 'PUT', body: JSON.stringify(doc), keepalive: true }).catch(() => {});
+    }
+    return saving;
   }
-  document.body.append(el);
-  const r = anchor.getBoundingClientRect();
-  const below = r.bottom + 4 + el.offsetHeight <= innerHeight;
-  el.style.left = `${Math.max(4, Math.min(r.left, innerWidth - el.offsetWidth - 4))}px`;
-  el.style.top = `${below ? r.bottom + 4 : Math.max(4, r.top - 4 - el.offsetHeight)}px`;
-  anchor.setAttribute('aria-expanded', 'true');
-  openMenu = { el, anchor };
-  (el.querySelector('[aria-checked="true"]') || el.querySelector('button')).focus();
+  if (!dirty()) { clearDraft(doc); return; }
+  saving = (async () => {
+    let conflicts = 0;
+    while (dirty()) {
+      const snapshot = structuredClone(doc);
+      cacheDraft();
+      saveState('Saving...', 'pending');
+      try {
+        const result = await api('/api/layouts', { method: 'PUT', body: JSON.stringify(snapshot), keepalive });
+        savedDoc = { ...snapshot, revision: result.revision };
+        doc.revision = result.revision;
+        clearDraft(snapshot);
+        saveState('Saved');
+      } catch (e) {
+        if (e.status === 409 && conflicts++ < 3) {
+          const remote = migrate(e.body.layouts);
+          const merged = recoverLayouts(doc, savedDoc, remote);
+          savedDoc = structuredClone(remote);
+          applyDocument(merged.doc);
+          cacheDraft();
+          if (merged.recovered) $('saveStatus').title = 'Edits from another browser were kept. Your changes are in a recovered layout.';
+          continue;
+        }
+        saveState('Save pending', 'error');
+        $('saveStatus').title = e.message;
+        return;
+      }
+    }
+    clearDraft(doc);
+    saveState('Saved');
+  })();
+  try { await saving; } finally { saving = null; }
 }
 
-document.addEventListener('pointerdown', (e) => {
-  if (openMenu && !openMenu.el.contains(e.target) && !openMenu.anchor.contains(e.target)) closeMenu();
-}, true);
-document.addEventListener('keydown', (e) => {
-  if (!openMenu) return;
-  if (e.key === 'Escape') { const { anchor } = openMenu; closeMenu(); anchor.focus(); return; }
-  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
-  e.preventDefault();
-  const buttons = [...openMenu.el.querySelectorAll('button')];
-  const i = buttons.indexOf(document.activeElement);
-  buttons[(i + (e.key === 'ArrowDown' ? 1 : buttons.length - 1)) % buttons.length].focus();
+async function syncLayouts() {
+  if (!doc || document.hidden || syncing || saving) return;
+  if (dirty()) { await flush(); return; }
+  if (streamer.live) return;
+  syncing = true;
+  const revision = doc.revision;
+  try {
+    const state = await api('/api/state');
+    if (!dirty() && !saving && doc.revision === revision && state.layouts && state.layouts.revision > revision) {
+      savedDoc = migrate(state.layouts);
+      applyDocument(structuredClone(savedDoc));
+      saveState('Saved');
+    }
+    settings = state.settings;
+  } catch { /* Pending edits retry on the next autosave or reconnect. */ }
+  finally { syncing = false; }
+}
+const splitStorage = {
+  getItem: (key) => localStorage.getItem(key),
+  setItem: (key, value) => localStorage.setItem(key, value),
+  removeItem: (key) => localStorage.removeItem(key),
+};
+const splitsStore = new SplitsStore({
+  put: (run, keepalive) => api('/api/splits', { method: 'PUT', body: JSON.stringify(run), keepalive }),
+  storage: splitStorage,
+  onStatus: ({ state, message }) => {
+    $('splitsStatus').textContent = message;
+    $('splitsStatus').dataset.state = state;
+    $('splitsConflict').hidden = state !== 'conflict';
+  },
 });
-addEventListener('resize', closeMenu);
+const saveSplits = () => splitsStore.update(timer.run);
 
-// A click on the dim area around a dialog closes it.
-for (const dialog of document.querySelectorAll('dialog')) {
-  dialog.addEventListener('click', (e) => {
-    if (e.target !== dialog) return;
-    const r = dialog.getBoundingClientRect();
-    if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) dialog.close();
-  });
-}
+$('splitsKeepLocal').addEventListener('click', () => {
+  if (confirm('Replace the saved splits with this browser’s version? Export the saved version from the other browser first if you want to keep it.')) splitsStore.keepLocal();
+});
+$('splitsLoadRemote').addEventListener('click', () => {
+  if (!confirm('Load the saved splits and discard this browser’s unsaved changes and current attempt? Export your splits first if you want to keep them.')) return;
+  const run = splitsStore.loadRemote();
+  if (run) { timer.load(run); renderTimer(); }
+});
 
 // ---------------------------------------------------------------- devices
 
@@ -283,9 +264,8 @@ async function devices(kind) {
 
 function startCamera(src) {
   const feed = compositor.feed(src);
-  if (['idle', 'error', 'ended'].includes(feed.status)) {
-    feed.stop();
-    feed.open(() => openCamera(src.deviceId, src.name)).then(() => { renderSources(); renderGreen(); });
+  if (feed.status === 'idle' || feed.status === 'error') {
+    feed.open(() => openCamera(src.deviceId, '1080p')).then(() => { renderSources(); renderGreenscreen(); });
   }
   return feed;
 }
@@ -299,86 +279,38 @@ function startScreen() {
   feed.open(openScreen).then(() => {
     if (feed.stream && feed.stream.getAudioTracks().length) {
       mixer.add('screen', feed.stream, { label: 'Screen audio', owned: false, ...doc.screenAudio });
-      feed.stream.getVideoTracks()[0].addEventListener('ended', () => { mixer.remove('screen'); renderMixer(); renderSources(); });
+      feed.stream.getVideoTracks()[0].addEventListener('ended', () => { mixer.remove('screen'); renderMixer(); });
     }
-    renderSources(); renderMixer();
+    renderSources(); renderGreenscreen(); renderMixer();
   });
 }
 
-async function openSavedAudio(retry = false) {
+async function openSavedAudio() {
   for (const input of doc.audio) {
-    if (mixer.strips.has(input.id) || (!retry && missingAudio.has(input.id))) continue;
-    await openInput(input);
+    try {
+      mixer.add(input.id, await openAudioInput(input.deviceId, input.mode), input);
+      missingAudio.delete(input.id);
+      syncInputProtection();
+    } catch {
+      missingAudio.add(input.id);
+    }
   }
   renderMixer();
-}
-
-async function openInput(input) {
-  try {
-    const stream = await openAudioInput(input.deviceId, input.label);
-    if (!doc.audio.some((a) => a.id === input.id)) { stream.getTracks().forEach((t) => t.stop()); return; }
-    mixer.add(input.id, stream, { ...input, label: inputName(input, stream) });
-    missingAudio.delete(input.id);
-    watchEnd(input.id, stream);
-    // Saved before inputs knew their computer: it works here, so it is this one's.
-    if (input.deviceId !== DEFAULT_MIC && !input.computer && computer) {
-      const saved = doc.audio.find((a) => a.id === input.id);
-      if (saved) { saved.computer = computer; save(); }
-    }
-  } catch (e) {
-    const problem = audioProblem(e);
-    const mine = input.deviceId === DEFAULT_MIC || input.computer === computer;
-    // Another computer's input, or an unclaimed one this computer does not have.
-    const theirs = !mine && (input.computer || problem === NOT_HERE);
-    missingAudio.set(input.id, theirs ? ELSEWHERE : problem);
-  }
-}
-
-// An input that stops by itself says so, and is tried once more shortly:
-// a sound system that restarts is usually back within a second.
-function watchEnd(id, stream) {
-  const track = stream.getAudioTracks()[0];
-  if (!track) return;
-  track.addEventListener('ended', () => {
-    const strip = mixer.strips.get(id);
-    if (!strip || strip.track !== track) return;
-    mixer.remove(id);
-    missingAudio.set(id, STOPPED);
-    renderMixer();
-    setTimeout(async () => {
-      const input = doc.audio.find((a) => a.id === id);
-      if (!input || missingAudio.get(id) !== STOPPED) return;
-      await openInput(input);
-      renderMixer();
-    }, 1500);
-  });
-}
-
-// The default microphone shows which device it is on this computer.
-function inputName(input, stream) {
-  if (input.deviceId !== DEFAULT_MIC) return input.label;
-  const track = stream.getAudioTracks()[0];
-  const device = track ? track.label.replace(/^Default( - )?/i, '').trim() : '';
-  return device ? `Default mic · ${device}` : 'Default mic';
-}
-
-// Why an input could not be opened, in words that say what to do.
-function audioProblem(error) {
-  const name = error && error.name;
-  if (name === 'NotAllowedError' || name === 'SecurityError') return 'blocked. Allow the microphone for this site (icon in the address bar)';
-  if (name === 'NotReadableError' || name === 'AbortError') return 'could not be opened. Another app may be using it, or the system cannot';
-  if (name === 'NotFoundError' || name === 'OverconstrainedError') return NOT_HERE;
-  return (error && error.message) || 'could not be opened';
 }
 
 // ---------------------------------------------------------------- layouts
 
 function renderLayouts() {
-  $('layoutName').textContent = active().name;
+  $('workspaceName').textContent = active().name;
+  $('layoutList').replaceChildren(...doc.layouts.map((layout) => {
+    const button = btn(layout.name, () => switchLayout(layout.id));
+    button.setAttribute('aria-pressed', String(layout.id === doc.active));
+    return button;
+  }));
+  $('layoutDelete').disabled = doc.layouts.length < 2;
 }
 
 function switchLayout(id) {
-  if (id === doc.active) return;
   doc.active = id;
   compositor.select(null);
   active().sources.filter((s) => s.type === 'camera').forEach(startCamera);
@@ -386,49 +318,44 @@ function switchLayout(id) {
   renderAll();
 }
 
-$('layoutButton').addEventListener('click', () => showMenu($('layoutButton'), [
-  ...doc.layouts.map((l) => ({ label: l.name, checked: l.id === doc.active, run: () => switchLayout(l.id) })),
-  '-',
-  { label: 'New layout…', action: 'new', run: newLayout },
-  { label: 'Duplicate', action: 'duplicate', run: duplicateLayout },
-  { label: 'Rename…', action: 'rename', run: renameLayout },
-  { label: 'Delete', action: 'delete', danger: true, run: deleteLayout },
-  '-',
-  { label: settings.hasKey ? 'Twitch stream key ✓' : 'Twitch stream key…', action: 'key', run: openKeyDialog },
-  '-',
-  { label: 'Log out', action: 'logout', run: () => $('logoutForm').submit() },
-]));
-
-function newLayout() {
-  const name = (prompt('Name for the new layout', `Layout ${doc.layouts.length + 1}`) || '').trim();
+$('workspaceMenu').addEventListener('click', (e) => {
+  if (e.target.closest('button')) $('workspaceMenu').open = false;
+});
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#workspaceMenu')) $('workspaceMenu').open = false;
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && $('workspaceMenu').open) {
+    $('workspaceMenu').open = false;
+    $('workspaceMenu').querySelector('summary').focus();
+  }
+});
+$('layoutNew').addEventListener('click', () => {
+  const name = prompt('Name for the new layout', `Layout ${doc.layouts.length + 1}`);
   if (!name) return;
   const layout = { id: uid(), name, sources: [] };
   doc.layouts.push(layout);
   switchLayout(layout.id);
-}
-
-function duplicateLayout() {
+});
+$('layoutCopy').addEventListener('click', () => {
   const copy = structuredClone(active());
   copy.id = uid();
   copy.name += ' copy';
   copy.sources.forEach((s) => { s.id = uid(); });
   doc.layouts.push(copy);
   switchLayout(copy.id);
-}
-
-function renameLayout() {
-  const name = (prompt('Layout name', active().name) || '').trim();
+});
+$('layoutRename').addEventListener('click', () => {
+  const name = prompt('Layout name', active().name);
   if (name) { active().name = name; save(); renderLayouts(); }
-}
-
-function deleteLayout() {
+});
+$('layoutDelete').addEventListener('click', () => {
   if (doc.layouts.length < 2) { alert('Keep at least one layout.'); return; }
   if (!confirm(`Delete the layout "${active().name}"?`)) return;
-  deletedLayouts.add(doc.active);
   doc.layouts = doc.layouts.filter((l) => l !== active());
   compositor.prune(allSources());
   switchLayout(doc.layouts[0].id);
-}
+});
 
 // ---------------------------------------------------------------- sources
 
@@ -436,27 +363,32 @@ function addSource(src) {
   active().sources.push(src);
   compositor.select(src.id);
   save();
+  renderSources();
+  renderGreenscreen();
 }
 
-$('addCamera').addEventListener('click', async (e) => {
-  const anchor = e.currentTarget;
-  let cams;
-  try { cams = await devices('videoinput'); } catch (err) { alert(`Could not open a video device: ${err.message}`); return; }
-  if (!cams.length) { alert('No video devices found. Plug in the camera or capture card and try again.'); return; }
-  if (cams.length === 1) { addCamera(cams[0]); return; }
-  const used = new Set(active().sources.map((s) => s.deviceId));
-  showMenu(anchor, cams.map((c) => ({ label: `${c.label || 'Video device'}${used.has(c.deviceId) ? ' (in this layout)' : ''}`, run: () => addCamera(c) })));
+$('addCamera').addEventListener('click', async () => {
+  try {
+    const cams = await devices('videoinput');
+    if (!cams.length) { alert('No video devices found. Plug in the camera or capture card and try again.'); return; }
+    const used = new Set(active().sources.map((s) => s.deviceId));
+    const preferred = cams.find((c) => !used.has(c.deviceId)) || cams[0];
+    const pick = cams.length === 1 ? 1 : Number(prompt(`Video device\n\n${cams.map((c, i) => `${i + 1}. ${c.label || 'Camera'}`).join('\n')}`, String(cams.indexOf(preferred) + 1)));
+    const cam = cams[pick - 1];
+    if (!cam) return;
+    const { width: W, height: H } = doc.output;
+    const src = {
+      id: uid(), type: 'camera', name: cam.label || 'Video device', visible: true,
+      deviceId: cam.deviceId, resolution: '1080p', x: W / 4, y: H / 4, w: W / 2, h: H / 2,
+      chroma: { ...CHROMA_DEFAULTS },
+    };
+    addSource(src);
+    const feed = startCamera(src);
+    fitWhenReady(src, feed);
+  } catch (e) {
+    alert(`Could not open a video device: ${e.message}`);
+  }
 });
-
-function addCamera(cam) {
-  const { width: W, height: H } = doc.output;
-  const src = {
-    id: uid(), type: 'camera', name: cam.label || 'Video device', visible: true,
-    deviceId: cam.deviceId, x: W / 4, y: H / 4, w: W / 2, h: H / 2, chroma: { ...CHROMA_DEFAULTS },
-  };
-  addSource(src);
-  fitWhenReady(src, startCamera(src));
-}
 
 $('addScreen').addEventListener('click', () => {
   if (!active().sources.some((s) => s.type === 'screen')) {
@@ -468,7 +400,7 @@ $('addScreen').addEventListener('click', () => {
 
 $('addTimer').addEventListener('click', () => {
   const existing = active().sources.find((s) => s.type === 'timer');
-  if (existing) { bringToFront(existing); compositor.select(existing.id); return; }
+  if (existing) { selectSource(existing); return; }
   addSource(timerSource(doc.output.width, doc.output.height));
 });
 
@@ -485,44 +417,65 @@ function resetSize(src) {
   save();
 }
 
-function bringToFront(src) {
-  const list = active().sources;
-  if (list[list.length - 1] === src) return;
-  list.splice(list.indexOf(src), 1);
-  list.push(src);
-  save();
-}
-
 function renderSources() {
   const list = $('sourceList');
   const sources = [...active().sources].reverse();     // front-most at the top, like OBS
   list.replaceChildren(...sources.map((src) => {
     const li = document.createElement('li');
     li.className = (src.id === compositor.selected ? 'selected ' : '') + (src.visible ? '' : 'hidden-source');
-    li.dataset.type = src.type;
-    const name = Object.assign(document.createElement('span'), { className: 'name', textContent: src.name, title: src.name });
+    const name = Object.assign(document.createElement('span'), { className: 'name', textContent: src.name });
     const button = (text, title, fn) => {
       const b = Object.assign(document.createElement('button'), { textContent: text, title });
       b.setAttribute('aria-label', `${title} ${src.name}`);
       b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });
       return b;
     };
-    li.append(button(src.visible ? 'Hide' : 'Show', src.visible ? 'Hide' : 'Show', () => { src.visible = !src.visible; save(); renderSources(); }), name);
-    const feed = src.type === 'timer' ? null : compositor.feeds.get(feedKey(src));
-    if (src.type === 'screen' && !(feed && feed.status === 'live')) li.append(button('Share', 'Share a screen for', startScreen));
-    if (src.type === 'camera' && feed && ['error', 'ended'].includes(feed.status)) {
-      name.title = feed.error || 'The device stopped.';
-      li.append(button('Retry', `${name.title} Try again:`, () => startCamera(src)));
-    }
     li.append(
+      button(src.visible ? 'Hide' : 'Show', src.visible ? 'Hide' : 'Show', () => { src.visible = !src.visible; save(); renderSources(); }),
+      name,
       button('↑', 'Bring forward', () => move(src, 1)),
       button('↓', 'Send backward', () => move(src, -1)),
       button('✕', 'Remove', () => remove(src)),
     );
-    // The timer comes to the front when picked here, so nothing covers it.
-    li.addEventListener('click', () => { if (src.type === 'timer') bringToFront(src); compositor.select(src.id); });
+    li.tabIndex = 0;
+    li.setAttribute('aria-label', src.name);
+    li.addEventListener('click', () => selectSource(src));
+    li.addEventListener('keydown', (e) => {
+      if (e.target === li && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); selectSource(src); }
+    });
+    const feed = src.type !== 'timer' && compositor.feeds.get(feedKey(src));
+    if (feed && (feed.status === 'error' || feed.status === 'ended')) {
+      li.title = feed.error || 'Source disconnected';
+      li.append(button('Reconnect', 'Reconnect', () => reconnectSource(src)));
+    }
     return li;
   }));
+}
+
+function selectSource(src) {
+  if (src.type === 'timer') {
+    active().sources = active().sources.filter((s) => s !== src);
+    active().sources.push(src);
+    src.visible = true;
+    save();
+  }
+  compositor.select(src.id);
+}
+
+async function reconnectSource(src) {
+  if (src.type === 'screen') { startScreen(); return; }
+  try {
+    const cams = await devices('videoinput');
+    if (!cams.length) throw new Error('No video devices found.');
+    const matching = cams.find((c) => c.label === src.name) || cams[0];
+    const index = cams.length === 1 ? 0 : Number(prompt(`Video device\n\n${cams.map((c, i) => `${i + 1}. ${c.label || 'Camera'}`).join('\n')}`, String(cams.indexOf(matching) + 1))) - 1;
+    if (!cams[index]) return;
+    src.deviceId = cams[index].deviceId;
+    src.name = cams[index].label || src.name;
+    compositor.prune(allSources());
+    startCamera(src);
+    save();
+  } catch (e) { alert(e.message); }
 }
 
 function move(src, delta) {
@@ -543,62 +496,70 @@ function remove(src) {
   if (!allSources().some((s) => s.type === 'screen')) { mixer.remove('screen'); renderMixer(); }
   save();
   renderSources();
-  renderGreen();
 }
 
-// ------------------------------------------------------------ green screen
+// ----------------------------------------------------------- green screen
 
-// The selected camera, or else the first one in the layout.
-function greenTarget() {
-  const sel = selected();
-  return sel && sel.type === 'camera' ? sel : active().sources.find((s) => s.type === 'camera');
+function field(label, input) {
+  const l = document.createElement('label');
+  l.append(label, input);
+  return l;
 }
 
-function renderGreen() {
-  const cam = greenTarget();
-  const usable = !!cam && compositor.keyingAvailable;
-  for (const id of ['greenOn', 'greenColor', 'greenUpload']) $(id).disabled = !usable;
-  $('greenName').textContent = cam && active().sources.filter((s) => s.type === 'camera').length > 1 ? cam.name : '';
-  $('greenHint').hidden = usable;
-  $('greenHint').textContent = cam ? 'This browser has no WebGL, so keying is unavailable.' : 'Add a video device to key out its green screen.';
-  $('greenOn').checked = !!(cam && cam.chroma.enabled);
-  $('greenColor').value = cam ? cam.chroma.color : CHROMA_DEFAULTS.color;
-  $('greenUpload').textContent = cam && cam.chroma.background ? 'Change background' : 'Upload background';
-  $('greenClear').hidden = !(usable && cam.chroma.background);
+function control(tag, props = {}, onInput) {
+  const el = Object.assign(document.createElement(tag), props);
+  if (onInput) el.addEventListener(tag === 'select' ? 'change' : 'input', () => onInput(el));
+  return el;
 }
 
-$('greenOn').addEventListener('change', (e) => {
-  const cam = greenTarget();
-  if (cam) { cam.chroma.enabled = e.target.checked; save(); }
-});
-$('greenColor').addEventListener('input', (e) => {
-  const cam = greenTarget();
-  if (cam) { cam.chroma.color = e.target.value; save(); }
-});
-$('greenUpload').addEventListener('click', () => { const cam = greenTarget(); if (cam) uploadBackground(cam); });
-$('greenClear').addEventListener('click', () => {
-  const cam = greenTarget();
-  if (!cam) return;
-  cam.chroma.background = null;
-  cam.chroma.backgroundType = null;
-  save();
-  renderGreen();
-});
+function btn(text, fn, className = '') {
+  const b = Object.assign(document.createElement('button'), { textContent: text, className });
+  b.addEventListener('click', fn);
+  return b;
+}
+
+function renderGreenscreen() {
+  const host = $('greenscreen');
+  const src = selected();
+  const camera = src?.type === 'camera' ? src : null;
+  const c = camera?.chroma || CHROMA_DEFAULTS;
+  const disabled = !camera || !compositor.keyingAvailable;
+  const on = control('input', { type: 'checkbox', checked: c.enabled, disabled }, (el) => { c.enabled = el.checked; save(); });
+  on.setAttribute('aria-label', 'Enable green screen');
+  const onLabel = field('Enabled', on);
+  onLabel.className = 'check';
+  const color = control('input', { type: 'color', value: c.color, disabled, title: 'Key color' }, (el) => { c.color = el.value; save(); });
+  color.setAttribute('aria-label', 'Key color');
+  const upload = btn('Upload', () => uploadBackground(camera));
+  upload.title = 'Upload photo or video';
+  upload.disabled = disabled;
+  const row = document.createElement('div');
+  row.className = 'row green-controls';
+  row.append(onLabel, color, upload);
+  if (camera && c.background) {
+    const remove = btn('×', () => { c.background = null; c.backgroundType = null; save(); renderGreenscreen(); });
+    remove.title = 'Remove background';
+    remove.setAttribute('aria-label', 'Remove background');
+    row.append(remove);
+  }
+  host.replaceChildren(row);
+  host.title = !camera ? 'Select a camera' : !compositor.keyingAvailable ? 'Green screen requires WebGL' : camera.name;
+}
 
 function uploadBackground(src) {
   pickFile('image/*,video/*', async (file) => {
-    $('greenUpload').disabled = true;
-    $('greenUpload').textContent = 'Uploading…';
     try {
+      showStatus({ state: 'connecting', message: 'Uploading…' });
       const { url } = await api('/api/media', { method: 'POST', body: file, headers: { 'Content-Type': file.type } });
       src.chroma.background = url;
       src.chroma.backgroundType = file.type.startsWith('video/') ? 'video' : 'image';
       src.chroma.enabled = true;
       save();
+      renderGreenscreen();
+      showStatus(streamer.live ? { state: 'live', message: 'LIVE' } : { state: 'offline', message: 'Offline' });
     } catch (e) {
-      alert(`Upload failed: ${e.message}`);
+      showStatus({ state: 'error', message: `Upload failed: ${e.message}` });
     }
-    renderGreen();
   });
 }
 
@@ -612,64 +573,109 @@ function pickFile(accept, onFile) {
 
 // ------------------------------------------------------------------ audio
 
-function btn(text, fn, className = '') {
-  const b = Object.assign(document.createElement('button'), { textContent: text, className });
-  b.addEventListener('click', fn);
-  return b;
-}
-
 function renderMixer() {
   const host = $('mixer');
   const strips = [...mixer.strips.values()];
-  const missing = doc.audio.filter((a) => missingAudio.has(a.id) && missingAudio.get(a.id) !== ELSEWHERE && !mixer.strips.has(a.id));
-  $('audioPaused').hidden = !strips.length || mixer.ctx.state === 'running';
+  const missing = doc.audio.filter((a) => missingAudio.has(a.id));
   if (!strips.length && !missing.length) {
-    host.innerHTML = '<p class="hint">No audio on this computer yet: add a mic or capture card, or share a screen with sound.</p>';
+    host.replaceChildren();
     return;
   }
-  const name = (text) => Object.assign(document.createElement('span'), { className: 'name', textContent: text, title: text });
-  const hasDefault = doc.audio.some((a) => a.deviceId === DEFAULT_MIC);
   host.replaceChildren(
     ...strips.map((strip) => {
       const div = document.createElement('div');
-      div.className = strip.muted ? 'strip is-muted' : 'strip';
-      // Up to four times louder: a laptop's built-in mic is quiet without processing.
-      const gain = Object.assign(document.createElement('input'), { type: 'range', min: 0, max: 4, step: 0.01, value: strip.gain, title: 'Volume' });
-      gain.setAttribute('aria-label', `${strip.label} volume`);
-      gain.addEventListener('input', () => { mixer.set(strip.id, { gain: Number(gain.value) }); remember(strip); });
-      const mute = btn(strip.muted ? 'Muted' : 'Mute', () => { mixer.set(strip.id, { muted: !strip.muted }); remember(strip); renderMixer(); }, strip.muted ? 'muted' : '');
-      const drop = strip.id === 'screen' ? document.createElement('span')
-        : btn('✕', () => { mixer.remove(strip.id); doc.audio = doc.audio.filter((a) => a.id !== strip.id); save(); renderMixer(); });
-      drop.title = 'Remove';
+      div.className = 'strip';
+      const top = document.createElement('div');
+      top.className = 'top';
+      const mute = btn(strip.muted ? 'Muted' : 'Mute', () => {
+        mixer.set(strip.id, { muted: !strip.muted });
+        remember(strip);
+        renderMixer();
+      }, strip.muted ? 'muted' : '');
+      top.append(Object.assign(document.createElement('span'), { className: 'name', textContent: strip.label }), mute);
+      if (strip.id !== 'screen' && strip.id !== 'media') top.append(btn('✕', () => { mixer.remove(strip.id); doc.audio = doc.audio.filter((a) => a.id !== strip.id); save(); renderMixer(); }));
       const meter = document.createElement('div');
       meter.className = 'meter';
-      meter.title = 'Level (it moves even while muted)';
       meter.append(Object.assign(document.createElement('i'), { id: `meter-${strip.id}` }));
-      div.append(name(strip.label), mute, drop, gain, meter);
+      const gain = control('input', { type: 'range', min: 0, max: 2, step: 0.01, value: strip.gain, title: 'Volume' }, (el) => {
+        mixer.set(strip.id, { gain: Number(el.value) });
+        remember(strip);
+      });
+      gain.setAttribute('aria-label', `${strip.label} volume`);
+      div.append(top, meter, gain);
+      if (strip.media) {
+        gain.setAttribute('aria-label', 'Media stream volume');
+        gain.title = 'Volume sent to the stream';
+        const streamLabel = document.createElement('label');
+        streamLabel.className = 'strip-label';
+        streamLabel.append('Stream volume', gain);
+        div.append(streamLabel);
+        const monitor = btn(strip.monitor ? 'Speakers on' : 'Speakers off', () => media.setMonitor(!strip.monitor), strip.monitor ? '' : 'muted');
+        monitor.setAttribute('aria-pressed', String(strip.monitor));
+        monitor.id = 'mediaSpeakers';
+        const speakerVolume = control('input', { type: 'range', min: 0, max: 1, step: 0.01, value: strip.monitorGain }, (el) => {
+          doc.media.monitorGain = Number(el.value);
+          syncInputProtection();
+          mixer.set('media', { monitorGain: Number(el.value) });
+          save();
+        });
+        speakerVolume.setAttribute('aria-label', 'Media speaker volume');
+        const label = document.createElement('label');
+        label.className = 'strip-label';
+        label.append('Speaker volume', speakerVolume);
+        div.append(monitor, label);
+      } else if (strip.id !== 'screen') {
+        const input = doc.audio.find((a) => a.id === strip.id);
+        if (input) {
+          const mode = document.createElement('select');
+          mode.setAttribute('aria-label', `${strip.label} microphone protection`);
+          for (const [value, textContent] of [['echo', 'Mic: echo cancellation'], ['guard', 'Mic: mute during speaker playback'], ['raw', 'Raw audio / capture card']]) {
+            mode.append(Object.assign(document.createElement('option'), { value, textContent }));
+          }
+          mode.value = input.mode || 'echo';
+          mode.onchange = async () => {
+            const next = mode.value;
+            mode.disabled = true;
+            try {
+              // Chromium may resolve applyConstraints without changing its
+              // audio processing. Reopen the device with the chosen mode.
+              const stream = await openAudioInput(input.deviceId, next);
+              if (!doc.audio.includes(input) || mixer.strips.get(strip.id) !== strip) {
+                stream.getTracks().forEach((track) => track.stop());
+                return;
+              }
+              input.mode = next;
+              mixer.add(input.id, stream, input);
+              syncInputProtection();
+              save();
+            } catch (e) { alert(`Could not change microphone protection: ${e.message}`); }
+            renderMixer();
+          };
+          const status = document.createElement('p');
+          status.className = 'protection-status';
+          status.textContent = strip.blocked ? 'Mic muted while media plays on speakers'
+            : input.mode === 'guard' ? 'Mic will mute during speaker playback'
+            : input.mode === 'raw' ? 'Raw input · speaker pickup is possible'
+            : strip.track.getSettings().echoCancellation === false ? 'Echo cancellation unavailable · use mute during playback'
+            : 'Echo cancellation reduces speaker pickup; results vary by device.';
+          div.append(mode, status);
+        }
+      }
       return div;
     }),
     ...missing.map((a) => {
       const div = document.createElement('div');
-      div.className = 'strip missing';
-      div.append(name(`${a.label}: ${missingAudio.get(a.id)}`));
-      // A mic saved on another computer: this computer's default one instead.
-      if (missingAudio.get(a.id) === NOT_HERE && a.deviceId !== DEFAULT_MIC && !hasDefault) {
-        div.append(btn('Use default mic', () => {
-          Object.assign(a, { deviceId: DEFAULT_MIC, label: 'Default microphone' });
-          missingAudio.delete(a.id);
-          save();
-          openSavedAudio(true);
-        }));
-      }
-      div.append(btn('Retry', () => openSavedAudio(true)),
-        btn('Forget', () => { doc.audio = doc.audio.filter((x) => x !== a); missingAudio.delete(a.id); save(); renderMixer(); }));
+      div.className = 'strip';
+      div.append(Object.assign(document.createElement('p'), { className: 'error', textContent: `${a.label}: not available` }),
+        btn('Try again', openSavedAudio), btn('Forget', () => { doc.audio = doc.audio.filter((x) => x !== a); missingAudio.delete(a.id); save(); renderMixer(); }));
       return div;
     }),
   );
 }
 
 function remember(strip) {
-  if (strip.id === 'screen') doc.screenAudio = { gain: strip.gain, muted: strip.muted };
+  if (strip.id === 'media') Object.assign(doc.media, { gain: strip.gain, muted: strip.muted, monitor: strip.monitor, monitorGain: strip.monitorGain });
+  else if (strip.id === 'screen') doc.screenAudio = { gain: strip.gain, muted: strip.muted };
   else {
     const saved = doc.audio.find((a) => a.id === strip.id);
     if (saved) Object.assign(saved, { gain: strip.gain, muted: strip.muted });
@@ -677,304 +683,52 @@ function remember(strip) {
   save();
 }
 
-$('addAudio').addEventListener('click', async (e) => {
-  const anchor = e.currentTarget;
+$('addAudio').addEventListener('click', async () => {
   await mixer.resume();
   let inputs;
-  try {
-    inputs = await devices('audioinput');
-  } catch (err) {
-    alert(`The microphone ${audioProblem(err)}.`);
-    return;
-  }
+  try { inputs = await devices('audioinput'); } catch (e) { alert(`Microphone permission is needed: ${e.message}`); return; }
   const used = new Set(doc.audio.map((a) => a.deviceId));
-  const choices = [];
-  if (!used.has(DEFAULT_MIC)) choices.push({ deviceId: DEFAULT_MIC, label: 'Default microphone' });
-  // Chrome also lists the default and communications devices under those ids.
-  for (const d of inputs) if (d.deviceId && !['default', 'communications'].includes(d.deviceId) && !used.has(d.deviceId)) choices.push(d);
+  const choices = inputs.filter((d) => !used.has(d.deviceId));
   if (!choices.length) { alert('Every audio input is already in the mixer.'); return; }
-  showMenu(anchor, choices.map((d) => ({ label: d.deviceId === DEFAULT_MIC ? 'Default microphone (this computer’s)' : d.label || 'Audio input', run: () => addAudioInput(d) })));
-});
-
-async function addAudioInput(device) {
-  const entry = { id: uid(), deviceId: device.deviceId, label: device.label || 'Audio input', gain: 1, muted: false };
-  if (entry.deviceId !== DEFAULT_MIC && computer) entry.computer = computer;
+  const list = choices.map((d, i) => `${i + 1}. ${d.label || 'Audio input'}`).join('\n');
+  const pickIndex = choices.length === 1 ? 1 : Number(prompt(`Which audio input?\n\n${list}`, '1'));
+  const device = choices[pickIndex - 1];
+  if (!device) return;
   try {
-    const stream = await openAudioInput(entry.deviceId, entry.label);
-    mixer.add(entry.id, stream, { ...entry, label: inputName(entry, stream) });
-    watchEnd(entry.id, stream);
+    const entry = { id: uid(), deviceId: device.deviceId, label: device.label || 'Audio input', gain: 1, muted: false, mode: 'echo' };
+    mixer.add(entry.id, await openAudioInput(device.deviceId, entry.mode), entry);
     doc.audio.push(entry);
+    syncInputProtection();
     save();
     renderMixer();
   } catch (e) {
-    alert(`${entry.label} ${audioProblem(e)}.`);
-  }
-}
-
-// ------------------------------------------------------------------- chat
-//
-// The Twitch chat of the account the stream key streams to, as it arrives,
-// and a box to write in it. The page reads the chat straight from Twitch,
-// signed out. Writing goes through the server, which keeps the Twitch
-// sign-in (made with the studio's own Twitch app) as it keeps the key.
-
-const CHAT_KEEP = 300;          // messages kept on the page; older ones scroll away
-const CHAT_STATES = { connecting: 'connecting…', joined: '', missing: 'channel not found', off: '' };
-// Badges with no picture (Twitch's list did not load): the ones that matter, in words.
-const ROLES = { broadcaster: 'streamer', moderator: 'mod', vip: 'vip', subscriber: 'sub' };
-const chat = new TwitchChat({ on: chatEvent });
-let chatWanted = '';            // the channel being shown, or about to be
-let chatStuck = true;           // following the newest message (not scrolled up to read)
-let chatState = '';             // the connection's last state
-let assets = { emotes: {}, badges: {} };   // Twitch's global emotes, the global and channel badges
-let editingApp = false;         // the Twitch app form, opened again from the ⋯ menu
-let signInPoll = null;
-
-/** The channel to show: the signed-in account, and only when the stream key streams to it. */
-function chatChannel() {
-  const t = settings.twitch;
-  if (!t.account) return '';
-  const streamsHere = settings.hasKey ? t.keyAccount === t.account.id : t.canKey;   // no key yet: it comes from this account
-  return streamsHere ? channelName(t.account.login) : '';
-}
-
-function renderChat() {
-  const t = settings.twitch;
-  const channel = chatChannel();
-  if (channel !== chatWanted) {
-    chatWanted = channel;
-    $('chatLog').replaceChildren();
-    $('chatMore').hidden = true;
-    chatStuck = true;
-    chatState = '';
-    $('chatState').textContent = '';
-    if (!channel) chat.join('');
-    // Emotes and badges first, so the first messages already show them.
-    else loadAssets().finally(() => { if (chatWanted === channel) chat.join(channel); });
-  }
-  $('chatChannel').textContent = channel ? `#${channel}` : '';
-  $('chatMenu').hidden = !t.app;
-  $('chatBody').hidden = !channel;
-  // Setting up: every box as tall as what it holds, and the column scrolls if it must.
-  document.querySelector('.side').classList.toggle('chat-setup-open', !channel);
-  $('chatSend').hidden = !(channel && t.canWrite);
-  if ($('chatSend').hidden) chatError('');
-  renderChatSetup();
-  chatEmpty();
-  // Waiting for the owner on twitch.tv/activate: the server says when it is done.
-  clearTimeout(signInPoll);
-  if (t.pending) signInPoll = setTimeout(refreshTwitch, 2000);
-}
-
-function renderChatSetup() {
-  const t = settings.twitch;
-  const name = t.account && t.account.name;
-  $('chatProblem').textContent = t.problem || '';
-  $('chatProblem').hidden = !t.problem;
-  const showApp = !t.app || editingApp;
-  if (showApp && $('chatAppForm').hidden) { $('chatClientId').value = t.clientId || ''; $('chatClientSecret').value = ''; }
-  $('chatAppForm').hidden = !showApp;
-  $('chatAppCancel').hidden = !t.app;
-  let text = null;
-  let buttons = [];
-  if (showApp) {
-    // The form says it all.
-  } else if (t.pending) {
-    text = ['On Twitch, check that the code is ', Object.assign(document.createElement('b'), { className: 'code', textContent: t.pending.code }),
-      ' and press Authorize. This page carries on by itself.'];
-    const open = Object.assign(document.createElement('a'), { className: 'button primary', href: t.pending.url, target: '_blank', rel: 'noopener', textContent: 'Open Twitch ↗' });
-    buttons = [open, btn('Cancel', cancelSignIn)];
-  } else if (!t.account) {
-    text = 'Sign in with the Twitch account you stream from: its chat shows here, and you can write in it.';
-    buttons = [btn('Sign in with Twitch', startSignIn, 'primary')];
-  } else if (!settings.hasKey && !t.canKey) {
-    text = `Signed in as ${name}. Add ${name}’s stream key and the chat shows here.`;
-    buttons = [btn('Add stream key', openKeyDialog, 'primary')];
-  } else if (settings.hasKey && t.keyAccount !== t.account.id) {
-    text = `The stream key is for another Twitch account than ${name}. The chat shows only the account you stream from: sign in with that one, or use ${name}’s stream key.`;
-    buttons = t.canKey
-      ? [btn(`Use ${name}’s stream key`, () => twitchAction('/api/twitch/streamkey'), 'primary'), btn('Sign in again', startSignIn), btn('Replace stream key', openKeyDialog)]
-      : [btn('Sign in again', startSignIn, 'primary'), btn('Replace stream key', openKeyDialog)];
-  } else if (!t.canWrite) {
-    text = 'Sign in again to write in the chat.';
-    buttons = [btn('Sign in with Twitch', startSignIn, 'primary')];
-  }
-  $('chatStepText').replaceChildren(...[].concat(text || []));
-  $('chatStepButtons').replaceChildren(...buttons);
-  $('chatStep').hidden = !text;
-  $('chatSetup').hidden = !showApp && !text && !t.problem;
-}
-
-function chatEmpty() {
-  const channel = chatChannel();
-  $('chatLog').dataset.empty = chatState === 'missing'
-    ? `Twitch has no channel called ${channel} right now.`
-    : `Messages in #${channel}’s chat show up here as they are sent.`;
-}
-
-async function refreshTwitch() {
-  try { settings = await api('/api/settings'); } catch { /* keep what we know */ }
-  renderChat();
-}
-
-async function twitchAction(path, method = 'POST') {
-  try {
-    settings = await api(path, { method });
-  } catch (e) {
-    settings = { ...settings, twitch: { ...settings.twitch, problem: e.message } };
-  }
-  renderChat();
-}
-
-const startSignIn = () => twitchAction('/api/twitch/signin');
-const cancelSignIn = () => twitchAction('/api/twitch/signin', 'DELETE');
-
-$('chatMenu').addEventListener('click', () => {
-  const t = settings.twitch;
-  showMenu($('chatMenu'), [
-    ...(t.account ? [{
-      label: `Sign out of Twitch (${t.account.name})`, action: 'signout', run: () => {
-        if (confirm('Sign out of Twitch? The chat stops showing here until you sign in again.')) twitchAction('/api/twitch/signout');
-      },
-    }] : []),
-    { label: 'Twitch app…', action: 'app', run: () => { editingApp = true; renderChat(); $('chatClientId').focus(); } },
-  ]);
-});
-
-$('chatAppForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const id = $('chatClientId');
-  const secret = $('chatClientSecret');
-  const looksRight = (v) => /^[A-Za-z0-9]{20,64}$/.test(v);
-  const refuse = (input, message) => { input.setCustomValidity(message); input.reportValidity(); };
-  if (!looksRight(id.value.trim())) { refuse(id, 'That does not look like a Client ID: copy it from the app’s page on dev.twitch.tv.'); return; }
-  if (secret.value.trim() && !looksRight(secret.value.trim())) { refuse(secret, 'That does not look like a client secret.'); return; }
-  try {
-    const body = { twitchClientId: id.value.trim(), twitchClientSecret: secret.value.trim() };
-    settings = (await api('/api/settings', { method: 'PUT', body: JSON.stringify(body) })).settings;
-    editingApp = false;
-    secret.value = '';
-    renderChat();
-  } catch (err) {
-    refuse(id, err.message);
+    alert(`Could not open that input: ${e.message}`);
   }
 });
-for (const id of ['chatClientId', 'chatClientSecret']) $(id).addEventListener('input', (e) => e.target.setCustomValidity(''));
-$('chatAppCancel').addEventListener('click', () => { editingApp = false; renderChat(); });
 
-$('chatSend').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const input = $('chatText');
-  const message = input.value.trim();
-  if (!message || input.readOnly) return;
-  input.readOnly = true;            // not disabled: the cursor stays in the box
-  try {
-    const res = await api('/api/chat', { method: 'POST', body: JSON.stringify({ message }) });
-    // It shows in the chat when Twitch sends it round, like everyone else's.
-    if (res.sent) { input.value = ''; chatError(''); } else chatError(`Not sent: ${res.reason}`);
-  } catch (err) {
-    chatError(`Not sent: ${err.message}`);
-    if (err.status === 409) refreshTwitch();
-  } finally {
-    input.readOnly = false;
+function syncInputProtection() {
+  if (!doc) return;
+  if (media.speakersActive) {
+    clearTimeout(speakerTailTimer);
+    speakerTailTimer = null;
+    speakersPlaying = true;
+  } else if (speakersPlaying && !speakerTailTimer) {
+    // Let queued speaker audio and room reverberation finish before reopening.
+    speakerTailTimer = setTimeout(() => {
+      speakersPlaying = false;
+      speakerTailTimer = null;
+      syncInputProtection();
+      renderMixer();
+    }, 600);
   }
-});
-$('chatText').addEventListener('input', () => chatError(''));
-
-function chatError(text) {
-  $('chatError').textContent = text;
-  $('chatError').hidden = !text;
+  for (const input of doc.audio) mixer.set(input.id, { blocked: input.mode === 'guard' && speakersPlaying });
 }
 
-async function loadAssets() {
-  try { assets = await api('/api/chat/assets'); } catch { assets = { emotes: {}, badges: {} }; }
+function mediaChanged() {
+  if (!doc) return;
+  syncInputProtection();
+  renderMixer();
 }
-
-function chatEvent(event) {
-  if (event.type === 'state') {
-    chatState = event.state;
-    $('chatState').textContent = event.state === 'waiting' ? `reconnecting in ${event.seconds} s` : CHAT_STATES[event.state];
-    $('chatState').dataset.state = event.state;
-    chatEmpty();
-  } else if (event.type === 'message') {
-    addChatLine(chatLine(event.message));
-  } else if (event.type === 'notice') {
-    const li = document.createElement('li');
-    li.className = 'system';
-    li.append(event.text);
-    if (event.message) li.append(document.createElement('br'), ...chatLine(event.message).childNodes);
-    if (li.textContent.trim()) addChatLine(li);
-  } else if (event.type === 'clear') {
-    const log = $('chatLog');
-    if (!event.login) {
-      log.replaceChildren();
-      addChatLine(Object.assign(document.createElement('li'), { className: 'system', textContent: 'A moderator cleared the chat.' }));
-    } else {
-      // Someone timed out or banned: their messages go, like on Twitch.
-      for (const li of [...log.children]) if (li.dataset.login === event.login) li.remove();
-    }
-  } else if (event.type === 'delete') {
-    for (const li of [...$('chatLog').children]) if (li.dataset.id === event.id) li.remove();
-  }
-}
-
-function chatLine(m) {
-  const li = document.createElement('li');
-  li.dataset.id = m.id;
-  li.dataset.login = m.login;
-  li.title = new Date(m.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: 'America/Chicago' });
-  if (m.first) { li.classList.add('first'); li.title += ' · first message in this chat'; }
-  if (m.action) li.classList.add('action');
-  if (chatWanted && new RegExp(`@${chatWanted}\\b`, 'i').test(m.text)) li.classList.add('mention');
-  for (const badge of m.badges) {
-    const pic = assets.badges[badge];
-    const role = ROLES[badge.split('/')[0]];
-    const chip = () => (role ? Object.assign(document.createElement('span'), { className: 'chip', textContent: role }) : '');
-    if (!pic) { li.append(chip()); continue; }
-    const img = Object.assign(document.createElement('img'), { className: 'badge', src: pic.x1, srcset: `${pic.x2} 2x`, alt: pic.title, title: pic.title });
-    img.addEventListener('error', () => img.replaceWith(chip()), { once: true });
-    li.append(img);
-  }
-  if (m.bits) li.append(Object.assign(document.createElement('span'), { className: 'chip bits', textContent: `${m.bits} bits` }));
-  const who = Object.assign(document.createElement('b'), { className: 'who', textContent: m.name });
-  who.style.color = m.color;
-  const text = document.createElement('span');
-  if (m.action) text.style.color = m.color;
-  for (const part of m.parts) {
-    // Twitch's global emotes are pictures; a channel's own emotes stay words.
-    if (part.text !== undefined || !assets.emotes[part.emote]) { text.append(part.text ?? part.name); continue; }
-    const img = Object.assign(document.createElement('img'), {
-      className: 'emote', alt: part.name, title: part.name, src: emoteUrl(part.emote), srcset: `${emoteUrl(part.emote, '2.0')} 2x`,
-    });
-    // An emote that loads after the line was added makes it taller.
-    img.addEventListener('load', followChat, { once: true });
-    img.addEventListener('error', () => img.replaceWith(part.name), { once: true });
-    text.append(img);
-  }
-  li.append(who, m.action ? ' ' : ': ', text);
-  return li;
-}
-
-function addChatLine(li) {
-  const log = $('chatLog');
-  log.append(li);
-  while (log.children.length > CHAT_KEEP) log.firstElementChild.remove();
-  if (chatStuck) followChat();
-  else $('chatMore').hidden = false;
-}
-
-function followChat() {
-  if (!chatStuck) return;
-  const log = $('chatLog');
-  log.scrollTop = log.scrollHeight;
-}
-
-$('chatLog').addEventListener('scroll', () => {
-  const log = $('chatLog');
-  chatStuck = log.scrollHeight - log.scrollTop - log.clientHeight < 30;
-  if (chatStuck) $('chatMore').hidden = true;
-});
-$('chatMore').addEventListener('click', () => { chatStuck = true; followChat(); $('chatMore').hidden = true; });
 
 // ------------------------------------------------------------------ timer
 
@@ -984,7 +738,7 @@ function timerAction(action) {
     : action === 'skip' ? timer.skip()
     : action === 'pause' ? timer.pause()
     : action === 'reset' && timer.phase !== 'idle' ? (timer.reset(), 'reset') : null;
-  if (result === 'finish' || result === 'reset') saveSplits();
+  if (['start', 'finish', 'reset', 'undo-finish'].includes(result)) saveSplits();
   renderTimer();
 }
 
@@ -993,7 +747,6 @@ function renderTimer() {
   $('timerCategory').textContent = timer.run.category;
   $('timerSplit').textContent = { idle: 'Start', running: 'Split', paused: 'Split', ended: 'Finished' }[timer.phase];
   $('timerPause').textContent = timer.phase === 'paused' ? 'Resume' : 'Pause';
-  $('hotkeysButton').title = `Hotkeys: split ${doc.hotkeys.split || '—'}, reset ${doc.hotkeys.reset || '—'}, undo ${doc.hotkeys.undo || '—'}`;
 }
 
 $('timerSplit').addEventListener('click', () => timerAction('split'));
@@ -1052,364 +805,111 @@ $('splitsDialog').addEventListener('close', () => {
   renderTimer();
 });
 
-$('hotkeysButton').addEventListener('click', () => {
-  $('hotkeyFields').replaceChildren(...Object.entries(HOTKEYS).map(([key, label]) => {
-    const input = Object.assign(document.createElement('input'), { value: doc.hotkeys[key], readOnly: true, id: `hotkey-${key}` });
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Tab' || e.key === 'Escape') return;
-      e.preventDefault();
-      input.value = e.key === 'Backspace' || e.key === 'Delete' ? '' : e.code;
-    });
-    const l = document.createElement('label');
-    l.append(label, input);
-    return l;
-  }));
-  $('hotkeysDialog').returnValue = '';
-  $('hotkeysDialog').showModal();
-});
-
-$('hotkeysDialog').addEventListener('close', () => {
-  if ($('hotkeysDialog').returnValue !== 'save') return;
-  for (const key of Object.keys(HOTKEYS)) doc.hotkeys[key] = $(`hotkey-${key}`).value;
-  save();
-  renderTimer();
-});
-
 // Hotkeys work while this tab has focus: a USB numpad next to the controller is enough.
 window.addEventListener('keydown', (e) => {
-  if (e.target.closest('input, textarea, select, dialog') || e.repeat || openMenu) return;
+  if (!doc || document.querySelector('dialog[open]') || e.target.closest('input, textarea, select, dialog') || e.repeat) return;
   const action = Object.keys(HOTKEYS).find((k) => doc.hotkeys[k] === e.code);
   if (action) { e.preventDefault(); timerAction(action); }
 });
 
-// ------------------------------------------------------------- stream key
+// --------------------------------------------------------------- settings
 
-let afterKey = null;            // what was waiting for a stream key (going live), done once one is saved
-
-function askForKey(then) {
-  afterKey = then;
-  openKeyDialog();
-}
-
-function openKeyDialog() {
-  const input = $('streamKey');
-  input.value = '';
-  input.setCustomValidity('');
-  input.placeholder = settings.hasKey ? 'Saved. Paste a new key to replace it' : 'Twitch stream key';
-  $('keyDialog').showModal();
-  input.focus();
-}
-
-$('keyForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const input = $('streamKey');
-  const key = input.value.trim();
-  const next = afterKey;
-  if (!key && settings.hasKey) { $('keyDialog').close(); if (next) next(); return; }
-  try {
-    if (!key) throw new Error('Paste the key from your Twitch Creator Dashboard: Settings → Stream.');
-    settings = (await api('/api/settings', { method: 'PUT', body: JSON.stringify({ streamKey: key }) })).settings;
-    input.value = '';
-    $('keyDialog').close();
-    renderChat();
-    if (next) next();
-  } catch (err) {
-    input.setCustomValidity(err.message);
-    input.reportValidity();
-  }
+$('settingsButton').addEventListener('click', () => {
+  $('setIngest').value = settings.ingest;
+  $('setTest').checked = settings.testMode;
+  $('setResolution').value = `${doc.output.width}x${doc.output.height}`;
+  $('setFps').value = String(doc.output.fps);
+  $('setBitrate').value = doc.output.bitrate;
+  $('settingsError').textContent = '';
+  $('settingsDialog').showModal();
 });
-$('streamKey').addEventListener('input', (e) => e.target.setCustomValidity(''));
-$('keyDialog').addEventListener('close', () => { afterKey = null; });
+
+$('settingsSave').addEventListener('click', async (e) => {
+  e.preventDefault();
+  const [width, height] = $('setResolution').value.split('x').map(Number);
+  if (streamer.live && (width !== doc.output.width || height !== doc.output.height)) {
+    $('settingsError').textContent = 'Stop streaming before changing the resolution.';
+    return;
+  }
+  try {
+    const body = { ingest: $('setIngest').value.trim() || TWITCH_INGEST, testMode: $('setTest').checked };
+    settings = (await api('/api/settings', { method: 'PUT', body: JSON.stringify(body) })).settings;
+  } catch (err) {
+    $('settingsError').textContent = err.message;
+    return;
+  }
+  if (width !== doc.output.width) {
+    // Keep the layout proportional when the canvas size changes.
+    const k = width / doc.output.width;
+    for (const s of allSources()) for (const p of ['x', 'y', 'w', 'h']) s[p] = Math.round(s[p] * k);
+  }
+  doc.output = { width, height, fps: Number($('setFps').value), bitrate: Math.min(8000, Math.max(500, Number($('setBitrate').value) || 4500)) };
+  compositor.resize(width, height);
+  save();
+  $('settingsDialog').close();
+});
+
+$('streamKeyButton').addEventListener('click', () => {
+  $('setKey').value = '';
+  $('setKey').placeholder = settings.hasKey ? 'Replace saved stream key' : 'Twitch stream key';
+  $('setKey').setCustomValidity('');
+  $('streamKeyDialog').showModal();
+});
+$('setKey').addEventListener('input', () => $('setKey').setCustomValidity(''));
+$('streamKeyForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const key = $('setKey').value.trim();
+  if (!key) { $('setKey').setCustomValidity('Enter a stream key.'); $('setKey').reportValidity(); return; }
+  $('streamKeySave').disabled = true;
+  try {
+    settings = (await api('/api/settings', { method: 'PUT', body: JSON.stringify({ streamKey: key }) })).settings;
+    $('setKey').value = '';
+    $('streamKeyDialog').close();
+  } catch (error) {
+    $('setKey').setCustomValidity(error.message);
+    $('setKey').reportValidity();
+  } finally { $('streamKeySave').disabled = false; }
+});
+$('streamKeyDialog').addEventListener('close', () => { $('setKey').value = ''; });
+
+$('hotkeysButton').addEventListener('click', () => {
+  $('hotkeyFields').replaceChildren(...Object.entries(HOTKEYS).map(([key, label]) => {
+    const input = control('input', { value: doc.hotkeys[key], readOnly: true, id: `hotkey-${key}` });
+    input.title = 'Press a key; Backspace or Delete clears';
+    input.addEventListener('keydown', (e) => {
+      if (e.code === 'Tab' || e.code === 'Escape') return;
+      e.preventDefault();
+      if (['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight'].includes(e.code)) return;
+      const code = ['Backspace', 'Delete'].includes(e.code) ? '' : e.code;
+      if (code) for (const other of $('hotkeyFields').querySelectorAll('input')) if (other !== input && other.value === code) other.value = '';
+      input.value = code;
+    });
+    return field(label, input);
+  }));
+  $('hotkeysDialog').showModal();
+});
+$('hotkeysForm').addEventListener('submit', (e) => {
+  if (e.submitter?.value !== 'save') return;
+  for (const key of Object.keys(HOTKEYS)) doc.hotkeys[key] = $(`hotkey-${key}`).value;
+  save();
+});
+
+for (const dialog of document.querySelectorAll('dialog')) {
+  dialog.addEventListener('click', (e) => {
+    if (e.target !== dialog) return;
+    const rect = dialog.getBoundingClientRect();
+    if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) dialog.close('cancel');
+  });
+}
 
 // ------------------------------------------------------------------ live
 
-// Start streaming: the stream key if none is known yet, then the title and
-// category, then live.
 $('streamButton').addEventListener('click', async () => {
   if (streamer.live) { if (confirm('Stop streaming?')) streamer.stop(); return; }
-  mixer.resume();               // this click is what the browser wants before sound can start
-  if (!(await hasKey())) { askForKey(openLiveDialog); return; }
-  openLiveDialog();
-});
-
-// Is a stream key saved? Asked only once: after that it stays saved on the
-// server. It may have been saved in another window since this one loaded, and
-// signed in with Twitch the studio fetches it from there and saves it.
-async function hasKey() {
-  if (settings.hasKey) return true;
-  try { settings = await api('/api/settings'); } catch { /* keep what we know */ }
-  if (!settings.hasKey && settings.twitch.account && settings.twitch.canKey) {
-    try { settings = await api('/api/twitch/streamkey', { method: 'POST' }); } catch { /* then it is asked for */ }
-    renderChat();
-  }
-  return settings.hasKey;
-}
-
-async function startStream() {
+  if (!settings.hasKey) { $('streamKeyButton').click(); return; }
   await mixer.resume();
   streamer.start({ ...doc.output });
-}
-
-// ------------------------------------------------- title and category
-
-const categories = new Map();   // Twitch categories this page has seen, by lower-case name
-let recentCategories = [];      // [{ id, name }], newest first, the server keeps them
-let liveSaved = null;           // the title and category as Twitch has them
-let liveCanSet = false;         // the dialog may change them on Twitch
-let liveUpdateFailed = false;   // Twitch refused: the next "Go live" goes without
-
-const knowCategory = (c) => categories.set(c.name.toLowerCase(), c);
-function setRecentCategories(items) {
-  if (!Array.isArray(items)) return;
-  recentCategories = items.slice(0, 3);
-  recentCategories.forEach(knowCategory);
-}
-
-async function searchCategories(query) {
-  const data = await api(`/api/twitch/categories?q=${encodeURIComponent(query)}`);
-  data.items.forEach(knowCategory);
-  return data.items;
-}
-
-// The Twitch category a typed name stands for: null for an empty field.
-async function resolveCategory(name) {
-  const wanted = name.trim().toLowerCase();
-  if (!wanted) return null;
-  const found = categories.get(wanted) || (await searchCategories(name.trim())).find((c) => c.name.toLowerCase() === wanted);
-  if (!found) throw Object.assign(new Error('Pick a category from the list.'), { field: 'liveCategory' });
-  return found;
-}
-
-function liveNote(text) {
-  $('liveNote').textContent = text || '';
-  $('liveNote').hidden = !text;
-}
-function liveError(text) {
-  $('liveError').textContent = text || '';
-  $('liveError').hidden = !text;
-}
-
-async function openLiveDialog() {
-  const t = settings.twitch;
-  liveCanSet = !!(t.account && t.canTitle);
-  liveUpdateFailed = false;
-  liveSaved = null;
-  $('liveTitle').value = '';
-  $('liveCategory').value = '';
-  $('liveTitle').disabled = $('liveCategory').disabled = true;
-  $('liveGo').textContent = 'Go live';
-  $('liveGo').disabled = false;
-  liveError('');
-  liveNote(!t.account ? 'Sign in with Twitch in the Chat panel to set the title and category from here. Going live keeps the ones Twitch has.'
-    : !t.canTitle ? 'Sign in with Twitch again (Chat panel) to set the title and category from here. Going live keeps the ones Twitch has.'
-    : 'Asking Twitch…');
-  if (!$('liveDialog').open) $('liveDialog').showModal();
-  $('liveGo').focus();
-  if (!liveCanSet) return;
-  try {
-    const info = await api('/api/twitch/channel');
-    $('liveTitle').value = info.title;
-    $('liveCategory').value = info.category ? info.category.name : '';
-    if (info.category) knowCategory(info.category);
-    setRecentCategories(info.recent);
-    liveSaved = { title: info.title, category: $('liveCategory').value };
-    $('liveTitle').disabled = $('liveCategory').disabled = false;
-    liveNote('');
-    $('liveTitle').focus();
-  } catch (err) {
-    liveCanSet = false;
-    liveNote(`${err.message} Going live keeps the title and category Twitch has.`);
-  }
-}
-
-$('liveForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  livePicker.close();
-  const title = $('liveTitle').value.trim();
-  const name = $('liveCategory').value.trim();
-  const changed = liveCanSet && liveSaved && (title || name)
-    && (title !== liveSaved.title.trim() || name.toLowerCase() !== liveSaved.category.toLowerCase());
-  if (changed && !liveUpdateFailed) {
-    $('liveGo').disabled = true;
-    try {
-      const category = await resolveCategory(name);
-      if (category) $('liveCategory').value = category.name;
-      const res = await api('/api/twitch/channel', { method: 'PUT', body: JSON.stringify({ title, categoryId: category ? category.id : '' }) });
-      setRecentCategories(res.recent);
-    } catch (err) {
-      if (err.field) { liveError(err.message); $(err.field).focus(); return; }
-      // Twitch said no: say why, and let the next press go live with what Twitch has.
-      liveUpdateFailed = true;
-      liveError(`Twitch did not take the title and category: ${err.message}`);
-      $('liveGo').textContent = 'Go live with the old title';
-      return;
-    } finally {
-      $('liveGo').disabled = false;
-    }
-  }
-  $('liveDialog').close();
-  startStream();
 });
-$('liveCancel').addEventListener('click', () => $('liveDialog').close());
-$('liveDialog').addEventListener('close', () => livePicker.close());
-for (const id of ['liveTitle', 'liveCategory']) {
-  $(id).addEventListener('input', () => {
-    liveError('');
-    if (liveUpdateFailed) { liveUpdateFailed = false; $('liveGo').textContent = 'Go live'; }
-  });
-}
-
-// The category field is a combobox, as on the hub: typing lists exact Twitch
-// categories, clicking it lists the three used most recently. Arrow keys move
-// through the list, Enter picks, Escape closes.
-function categoryPicker(input, list) {
-  const results = new Map(); // lower-case query -> Twitch's answer, for this page
-  let options = [];
-  let active = -1;
-  let showing = '';          // 'recent', 'results' or 'note' while open
-  let timer = null;
-  let asked = 0;             // numbers the searches; only the newest may fill the list
-  let keepSelection = false;
-  const item = (text, className) => Object.assign(document.createElement('li'), { textContent: text, className });
-
-  function open(kind) {
-    showing = kind;
-    list.hidden = false;
-    input.setAttribute('aria-expanded', 'true');
-  }
-
-  function close() {
-    clearTimeout(timer);
-    asked += 1;
-    showing = '';
-    list.hidden = true;
-    input.setAttribute('aria-expanded', 'false');
-    highlight(-1);
-  }
-
-  function highlight(index) {
-    active = index;
-    list.querySelectorAll('[role="option"]').forEach((row, i) => {
-      row.setAttribute('aria-selected', String(i === index));
-      if (i === index) row.scrollIntoView({ block: 'nearest' });
-    });
-    if (index >= 0) input.setAttribute('aria-activedescendant', `${list.id}-${index}`);
-    else input.removeAttribute('aria-activedescendant');
-  }
-
-  function note(text) {
-    options = [];
-    list.replaceChildren(item(text, 'combo-note'));
-    highlight(-1);
-    open('note');
-  }
-
-  function offer(items, heading, kind) {
-    options = items;
-    const rows = items.map((c, i) => {
-      const row = item(c.name, 'combo-option');
-      row.id = `${list.id}-${i}`;
-      row.setAttribute('role', 'option');
-      row.addEventListener('click', () => choose(c));
-      return row;
-    });
-    if (heading) {
-      const title = item(heading, 'combo-heading');
-      title.setAttribute('role', 'presentation');
-      rows.unshift(title);
-    }
-    list.replaceChildren(...rows);
-    highlight(-1);
-    open(kind);
-  }
-
-  function choose(c) {
-    knowCategory(c);
-    input.value = c.name;
-    input.dispatchEvent(new Event('input'));
-    close();
-  }
-
-  function showRecent() {
-    if (recentCategories.length) offer(recentCategories, 'Recently used', 'recent');
-    else note('Type to search Twitch categories.');
-  }
-
-  async function search(query) {
-    const key = query.toLowerCase();
-    const ticket = ++asked;
-    if (!results.has(key)) {
-      if (showing !== 'results') note('Searching Twitch…');
-      try {
-        results.set(key, await searchCategories(query));
-      } catch (error) {
-        if (ticket === asked) note(error.message);
-        return;
-      }
-    }
-    if (ticket !== asked || document.activeElement !== input) return;
-    const found = results.get(key);
-    if (found.length) offer(found, '', 'results');
-    else note('No Twitch category matches that.');
-  }
-
-  input.addEventListener('focus', () => {
-    input.select();
-    keepSelection = true;
-    showRecent();
-  });
-  // The click that focused the field would drop the selection on mouseup.
-  input.addEventListener('mouseup', (event) => {
-    if (keepSelection) event.preventDefault();
-    keepSelection = false;
-  });
-  input.addEventListener('click', () => {
-    if (list.hidden) showRecent();
-  });
-  input.addEventListener('input', (event) => {
-    if (!event.isTrusted) return;          // a pick from the list, not typing
-    clearTimeout(timer);
-    const query = input.value.trim();
-    if (!query) {
-      asked += 1;
-      showRecent();
-      return;
-    }
-    timer = setTimeout(() => search(query), 250);
-  });
-  input.addEventListener('keydown', (event) => {
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      if (list.hidden) {
-        const query = input.value.trim();
-        if (query && !categories.has(query.toLowerCase())) search(query);
-        else showRecent();
-        return;
-      }
-      if (!options.length) return;
-      const step = event.key === 'ArrowDown' ? 1 : -1;
-      if (active < 0) highlight(step > 0 ? 0 : options.length - 1);
-      else highlight((active + step + options.length) % options.length);
-    } else if (event.key === 'Enter' && !list.hidden && active >= 0) {
-      event.preventDefault();
-      choose(options[active]);
-    } else if (event.key === 'Escape' && !list.hidden) {
-      event.preventDefault();      // closes the list, not the dialog
-      close();
-    }
-  });
-  input.addEventListener('blur', () => {
-    close();
-    // Typed in other capitals: show Twitch's own spelling.
-    const known = categories.get(input.value.trim().toLowerCase());
-    if (known) input.value = known.name;
-  });
-  // Pressing on the list must not take the focus away from the field.
-  list.addEventListener('mousedown', (event) => event.preventDefault());
-  return { close };
-}
-
-const livePicker = categoryPicker($('liveCategory'), $('liveCategoryList'));
 
 // "Go live" from a hub dashboard (HUB_ORIGIN on the server, the six7 hub). The
 // hub opens this studio in a window of its own; when the page is ready it says
@@ -1434,8 +934,6 @@ function hubLink(hubOrigin) {
 // page has been clicked once; if that is why the mixer is still asleep, one
 // full-window button asks for the click instead of streaming silence.
 async function goLive() {
-  // No key known: ask once, and carry on going live as soon as it is saved.
-  if (!(await hasKey())) { askForKey(() => goLive()); return 'needs-key'; }
   await Promise.race([mixer.resume(), new Promise((resolve) => setTimeout(resolve, 500))]);
   if (mixer.ctx.state !== 'running') {
     $('goLiveOverlay').hidden = false;
@@ -1471,23 +969,24 @@ function showStatus({ state, message, kbps, seconds, backlog }) {
 
 window.addEventListener('beforeunload', (e) => {
   if (streamer.live) { e.preventDefault(); e.returnValue = ''; }
+  flush(true);
+  splitsStore.flush(true);
 });
-// Leaving or hiding the page sends what is unsaved straight away; coming back
-// fetches what other devices saved meanwhile.
-window.addEventListener('pagehide', () => { if (dirty) flush(); });
-document.addEventListener('visibilitychange', () => { if (document.hidden) { if (dirty) flush(); } else pull(); });
-window.addEventListener('focus', pull);
-// A Twitch sign-in or a new stream key in another window or on another device.
-window.addEventListener('focus', refreshTwitch);
+window.addEventListener('pagehide', () => { flush(true); splitsStore.flush(true); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { flush(true); splitsStore.flush(true); }
+  else { syncLayouts(); splitsStore.flush(); }
+});
+window.addEventListener('online', () => { flush().then(syncLayouts); splitsStore.flush(); });
+window.addEventListener('focus', syncLayouts);
 
 // ------------------------------------------------------------------ boot
 
 function renderAll() {
   renderLayouts();
   renderSources();
-  renderGreen();
+  renderGreenscreen();
   renderMixer();
-  renderChat();
   renderTimer();
 }
 
@@ -1497,51 +996,48 @@ function tick() {
   const levels = mixer.levels();
   for (const [id, peak] of Object.entries(levels)) {
     const bar = document.getElementById(`meter-${id}`);
-    if (!bar) continue;
-    // -60 dBFS to 0 dBFS across the bar, so a quiet mic still shows.
-    bar.style.width = `${peak > 0.001 ? Math.min(100, ((20 * Math.log10(peak) + 60) / 60) * 100) : 0}%`;
-    bar.classList.toggle('clip', peak >= 0.99);
+    if (bar) bar.style.width = `${Math.min(100, peak * 100)}%`;
   }
-}
-
-// Changes that never reached the server (the page closed, the network or the
-// sign-in dropped) come back, as long as nothing newer was saved since.
-function unsavedChanges(saved) {
-  const pending = readStash();
-  if (!pending || !pending.doc || !Array.isArray(pending.doc.layouts)) return null;
-  const serverRev = (saved && saved.rev) || 0;
-  const nothingSince = pending.base === serverRev;
-  const ourSaveLanded = saved && saved.savedBy === pending.client && serverRev === pending.base + 1;
-  return nothingSince || ourSaveLanded ? pending.doc : null;
 }
 
 async function boot() {
   const state = await api('/api/state');
+  doc = migrate(state.layouts);
+  savedDoc = structuredClone(doc);
+  let restored = false;
+  try {
+    const cached = JSON.parse(localStorage.getItem(DRAFT_KEY));
+    if (cached?.doc?.layouts?.length && cached?.base?.layouts?.length) {
+      const recovered = recoverLayouts(migrate(cached.doc), migrate(cached.base), doc);
+      doc = recovered.doc;
+      restored = dirty();
+    }
+  } catch { /* An unavailable or invalid local draft never blocks the server layout. */ }
   settings = state.settings;
-  rev = (state.layouts && state.layouts.rev) || 0;
-  const unsaved = unsavedChanges(state.layouts);
-  doc = migrate(unsaved || state.layouts);
-  if (unsaved) { save(); } else dropStash(false);
-  timer.load(state.splits);
+  timer.load(splitsStore.initialize(state.splits, state.splitsRevision ?? state.splits?.revision ?? 0));
   compositor.resize(doc.output.width, doc.output.height);
   compositor.start();
+  media.restore();
   renderAll();
   // Devices come back on their own once the browser remembers the permission.
   allSources().filter((s) => s.type === 'camera').forEach(startCamera);
   openSavedAudio();
+  saveState('Saved');
+  if (!state.layouts) {
+    // The first default layout also needs a durable server copy.
+    savedDoc = { ...savedDoc, layouts: [] };
+    save();
+  } else if (restored) save();
+  else clearDraft(doc);
   setInterval(tick, 100);
-  // Autosave: retry anything unsaved, and pick up other devices' changes.
-  setInterval(() => { if (dirty) flush(); else pull(); }, 5000);
-  // Browsers keep sound off until the page is used: any click or key starts it.
-  for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, () => mixer.resume(), true);
-  mixer.ctx.addEventListener('statechange', renderMixer);
+  setInterval(syncLayouts, 5000);
+  setInterval(() => splitsStore.flush(), 5000);
+  splitsStore.flush();
+  document.addEventListener('click', () => mixer.resume(), { once: true });
   hubLink(settings.hubOrigin);
 }
 
 boot().catch((e) => showStatus({ state: 'error', message: e.message }));
 
 // For the console, and for tests.
-window.studio = {
-  get doc() { return doc; }, get rev() { return rev; }, get dirty() { return dirty; }, get settings() { return settings; },
-  timer, mixer, compositor, streamer, chat, flush, pull, save,
-};
+window.studio = { get doc() { return doc; }, timer, mixer, media, compositor, streamer, flush };

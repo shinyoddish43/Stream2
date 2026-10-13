@@ -21,51 +21,32 @@ turns what the browser sends into the H.264/AAC stream Twitch wants.
 
 - **Sources** — any video device the browser can see (USB webcams, HDMI capture
   cards such as Elgato or AVerMedia), a screen/window share, and the timer. Drag
-  to move, drag corners to resize. Devices open at the best they offer up to
-  1080p60; there are no per-device settings. Clicking the timer in the list
-  brings it to the front.
+  to move, drag corners to resize.
 - **Speedrun timer** — split, undo, skip, pause, reset; deltas against your PB in
   LiveSplit's colours; golds; sum of best. Drawn straight into the stream.
 - **Splits** — import and export LiveSplit `.lss` files (PB, golds, attempt count
-  and attempt history survive the round trip), or type segment names in.
+  and attempt history survive the round trip), or type segment names in. Undoing
+  an accidental finish restores the previous PB while keeping earned golds.
+  Split edits and records save independently of layouts; failed saves retry and
+  keep a browser draft across reloads. A conflict with another browser keeps your
+  local version available to export and asks which version to save.
 - **Audio mixer** — any audio input (capture-card audio, mic) plus screen audio,
-  each with volume (up to 4×), mute and a meter (in dB; it keeps moving while
-  muted, so you can see an input is alive). No processing is applied to
-  anything. A new studio starts with the **default microphone**, which means
-  the default mic of whichever computer the studio is open on; a mic saved on
-  another computer offers **Use default mic**. When an input cannot be opened
-  the mixer says why (not on this device, blocked for this site, in use).
-- **Green screen** — on a camera: on/off, the key colour (the browser's colour
-  picker has an eyedropper), and a photo or video as the background. The keying
-  strength is fixed.
-- **Layouts** — as many as you like, in the menu at the top right, left of
-  **Start streaming** (new, duplicate, rename, delete; also the stream key and
-  log out). Saved automatically on the server, so the same
-  layouts open in any browser on any device: each change is kept in the browser
-  at once, sent within a second and retried every few seconds until the server
-  has it; open pages pick up changes made elsewhere; a page that fell behind
-  merges instead of overwriting newer work; changes that never reached the
-  server (network or sign-in dropped, page closed) are sent on the next visit.
-- **Twitch** — 1280×720 at 30 fps and 4500 kbps to Twitch's global ingest
-  (`ingest.global-contribute.live-video.net`); there are no settings. The
-  stream key is asked for once and kept on the server (never sent back to the
-  browser); signed in with Twitch (see Chat), the studio takes it from Twitch
-  and saves it, so it is never asked for at all, and a key reset on Twitch is
-  picked up when the next stream starts. **Start streaming** asks for the
-  stream title and category first (the category field searches Twitch as you
-  type and offers the three used most recently, as on the six7 hub), sets them
-  on Twitch, then goes live. A hub's **Go live** skips that: the hub has its
-  own title and category.
-
-- **Chat** — the Twitch chat of the account you stream from, under the audio
-  mixer, with Twitch's badges and its global emotes (a channel's own emotes,
-  and BTTV/7TV ones, show as their names), and a box to write in it. Moderators'
-  deletions and timeouts take messages away as they do on Twitch. It needs a
-  Twitch app of your own once (the chat panel says how: a Client ID from
-  dev.twitch.tv, client type Public) and a sign-in with Twitch (a code on
-  twitch.tv/activate). The chat shows only when the signed-in account is the
-  stream key's; messages go out through the Twitch API as that account, and
-  the sign-in stays on the server like the stream key.
+  each with volume, mute and a meter. Microphones use echo cancellation by
+  default; choose **Raw audio / capture card** for an unprocessed input.
+- **Media player** — upload audio (or play audio from MP4/WebM), or search the
+  LibriVox public-domain audiobook collection on Internet Archive. Queue,
+  chapter navigation, seek, repeat, stream volume/mute and separate speaker
+  volume. Uploads and the queue save with your studio; playback position stays
+  on this browser, and reloading always leaves playback paused.
+- **Green screen** — select a camera, toggle the key, choose its colour, and
+  upload a photo or video as the background. Camera and keying settings have
+  permanent defaults.
+- **Workspaces** — create, duplicate, rename, delete, and switch layouts from
+  the top-left menu. Edits save automatically to the server across browsers
+  and devices. Offline edits retry when you reconnect; conflicting edits keep
+  both layouts, with a recovered copy of your changes.
+- **Twitch** — stream key kept on the server (never sent back to the browser),
+  and a bandwidth-test mode to try everything without going public.
 
 That is the whole feature list, on purpose.
 
@@ -131,23 +112,64 @@ Change the password later with
 
 ## First stream
 
-1. Layout menu (top right) → **Twitch stream key** → paste it (Twitch → Creator
-   Dashboard → Settings → Stream) → **Save**.
-2. **+ Video** and pick your capture card from the list.
-3. **+ Input** for the capture card's audio (it shows up as its own input,
-   e.g. "Game Capture HD60 S+"). The default mic is already there.
-4. Timer → **Import** an `.lss`, or **Edit** to type segments in.
+1. Open the workspace menu at the top left → **Twitch stream key** → paste
+   your key (Twitch → Creator Dashboard → Settings → Stream) → **Save**.
+   **Output settings** in the same menu has **Bandwidth test** for a dry run
+   that never goes public. Twitch uses the global ingest server by default.
+2. **+ Video device** adds the next available camera or capture card with
+   automatic settings. Select its source to move or resize it in the preview.
+3. **+ Audio input** for the capture card's audio (it shows up as its own input,
+   e.g. "Game Capture HD60 S+"), and again for your mic.
+4. **LiveSplit** → **Import** for a `.lss` file, or **Edit** to type segments in.
+   Select **Timer** in Sources to make it visible and bring it to the front.
 5. **Start streaming.** The status shows time live and upload rate.
+
+### Background media and audiobooks
+
+Use **Media player → Upload** for MP3, M4A/M4B, OGG/Opus, WAV, FLAC, AAC,
+MP4 or WebM (browser codec support applies; the default upload limit is 200 MB,
+configurable with `MAX_UPLOAD_MB`). Video files play their audio only. Use
+**Audiobooks** to search LibriVox by title or author, then **Add book** to queue
+its chapters and **Play** to begin. Chapters advance automatically. Removing a
+track removes it from the queue; unreferenced uploads are cleaned up after the
+existing one-hour grace period.
+
+The **Media player** channel in the existing mixer controls the audio sent to
+the stream. **Speakers on/off** and **Speaker volume** separately control what
+you hear on the device's current default output. Stream mute does not mute the
+speakers, and turning speakers off does not mute the stream. Microphones are
+never monitored back to the speakers. Avoid including this studio's playback
+in a screen/system-audio capture as that would send a second copy to the stream.
+
+Each audio input has a protection selector:
+
+- **Mic: echo cancellation** enables browser echo cancellation and noise
+  suppression, without automatic gain. Speaker monitoring passes through a
+  local WebRTC connection so the echo canceller receives the media reference;
+  it has no signaling/STUN service or remote peer. This reduces speaker pickup
+  while you talk, but effectiveness depends on your browser, device and room.
+- **Mic: mute during speaker playback** temporarily closes that input while
+  media plays on speakers, including a short tail after stopping. Your voice
+  is also muted during that time. It preserves your manual mute and volume.
+- **Raw audio / capture card** disables processing. Use this for capture cards
+  or a microphone with headphones when echo cancellation is not wanted.
+
+The catalog uses Internet Archive's [search](https://archive.org/advancedsearch.php)
+and [metadata](https://archive.org/developers/md-read.html) APIs, restricted to
+`librivoxaudio`. Chapters stream through the authenticated studio server with
+byte-range seeking. No API key is needed. Library outages show a retryable
+error; uploaded files remain usable. [LibriVox recordings](https://librivox.org/)
+are public domain in the US; status can vary elsewhere.
 
 ### Green screen
 
-Select the camera → tick **On** → set the colour to your screen's green (open
-the colour box and use its eyedropper on the preview) → **Upload background**.
+Select the camera in Sources → enable **Green screen** → choose the key colour
+with the colour selector → **Upload** a photo or video background.
 
 ### Timer hotkeys
 
-Numpad 1 split, 3 reset, 8 undo, 2 skip, 5 pause — change them with the ⌨
-button under the timer.
+Numpad 1 split, 3 reset, 8 undo, 2 skip, 5 pause. Change them using the
+**Timer hotkeys** button beside LiveSplit. Backspace or Delete clears a binding.
 They work while the studio tab has focus, which is fine for console games
 through a capture card. A browser cannot catch keys while another program has
 focus.
@@ -188,10 +210,18 @@ npm test
 | | |
 | --- | --- |
 | `test/timer.test.mjs` | splits, PB, golds, undo/skip/reset, delta colours, time formats |
-| `test/server.test.mjs` | login, lockout, origin checks, storage and layout revisions, the global ingest, the write-only stream key, uploads, path traversal, the relay to ffmpeg |
+| `test/splits-store.test.mjs` | durable drafts, failed-save retry, queued edits, finish undo during a save, revision conflicts and recovery across reloads |
+| `test/server.test.mjs` | login, lockout, origin checks, storage, the write-only stream key, uploads, path traversal, the relay to ffmpeg |
 | `test/sso.test.mjs` | single sign-on: the user a trusted proxy names is signed in (pages, API, stream socket), others and other addresses are not, log out goes back through the hub, the password login still works |
 | `test/install.test.mjs` | the installer against real Caddy and nginx in scratch folders: another site already on the server is kept, a clash or a broken config is rolled back without a reload, reruns are idempotent, IPv6 only where the kernel has it; `push.sh`'s remote command, quoting included; and `deploy/docker/push.sh` shipping the working tree without touching your git index |
 | `test/twitch.test.mjs` | a real ffmpeg pushes to a local RTMP server standing in for Twitch; checks H.264 + AAC, frame rate, and a keyframe every 2 s (skipped without ffmpeg) |
-| `test/chat.test.mjs` | Twitch chat: IRC lines, emote positions, readable name colours, the connection (join signed out, PING, moderators, RECONNECT, retry, a channel Twitch does not have) against a stand-in chat server; and on the server, against a stand-in Twitch (`test/fake-twitch.mjs`): the app's Client ID and secret, the device code sign-in, tokens never leaving the server, sending only as the stream key's account, dropped messages, token renewal, sign-out, the hourly check, global emotes and badges |
-| `test/golive.test.mjs` | the stream key from Twitch (saved at sign-in, kept across restarts, a reset on Twitch followed, another account's key never swapped in silently), and the title and category: what Twitch has, category search, the change made only on the account the key streams to |
-| `test/browser.test.mjs` | the studio in Chromium: the one-column layout, the default mic (meter while muted, a mic from another computer, a blocked mic), sign in, add a device, key a green screen onto an uploaded background and check the pixels, drag, the layout menu, layouts shared with a second browser (live updates, a stale save merged), unsaved changes restored, timer hotkeys, `.lss` round trip, mixer meters, the stream key popup and going live, the chat (set up, sign in, badges and emotes, moderators, a busy chat, writing in it, another account's key, sign-out), Start streaming's title and category picker, going live without being asked for a saved key, and a hub's Go live (skipped without Playwright) |
+| `test/audiobooks.test.mjs` | catalog restrictions, chapter order, caching and retries, redirect safety, streaming byte ranges, audio uploads and queue storage |
+| `test/media-browser.test.mjs` | real audio signal in stream and speakers, independent levels, microphone modes, pause/seek/queue/repeat, saved media, catalog UI and responsive layout |
+| `test/browser.test.mjs` | the studio in Chromium: sign in, green-screen pixels, dragging, compact menus, timer ordering and hotkeys, `.lss` round trip, mixer meters, going live, mobile overflow, and workspace saves across navigation, offline reconnect, and conflicting browser edits (skipped without Playwright) |
+
+Set `PLAYWRIGHT_PATH` to an installed Playwright module when it is outside this
+project and `CHROMIUM_PATH` to your Chromium executable. For example:
+
+```bash
+PLAYWRIGHT_PATH=/path/to/playwright/index.mjs CHROMIUM_PATH=/usr/bin/chromium npm test
+```

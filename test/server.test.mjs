@@ -1,7 +1,8 @@
 // The server: login, storage, uploads, and the relay to ffmpeg.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync, statSync, mkdtempSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, existsSync, statSync, mkdtempSync } from 'node:fs';
+import { once } from 'node:events';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -16,6 +17,7 @@ after(() => server.stop());
 const post = (path, body, headers = {}) => fetch(`${server.url}${path}`, {
   method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/json', Origin: server.url, ...headers }, body: JSON.stringify(body),
 });
+const GLOBAL_INGEST = 'rtmp://ingest.global-contribute.live-video.net/app';
 
 test('everything but the login page needs a session', async () => {
   const page = await fetch(`${server.url}/`, { redirect: 'manual' });
@@ -71,63 +73,108 @@ test('changes need a same-site Origin', async () => {
   assert.equal(res.status, 403);
 });
 
+test('a new studio uses global Twitch ingest and layout revision zero', async () => {
+  const state = await (await api('/api/state')).json();
+  assert.equal(state.settings.ingest, GLOBAL_INGEST);
+  assert.equal(state.layouts, null);
+  assert.equal(state.layoutsRevision, 0);
+  assert.equal(state.splitsRevision, 0);
+});
+
 test('layouts and splits are saved and read back', async () => {
   const doc = { layouts: [{ id: 'a', name: 'Main', sources: [] }], active: 'a' };
-  assert.equal((await api('/api/layouts', { method: 'PUT', body: JSON.stringify(doc) })).status, 200);
+  const saved = await api('/api/layouts', { method: 'PUT', body: JSON.stringify(doc) });
+  assert.equal(saved.status, 200);
+  assert.deepEqual(await saved.json(), { ok: true, revision: 1 });
   const run = { game: 'Celeste', segments: [{ name: 'Forsaken City', pb: 130, best: 125 }] };
   assert.equal((await api('/api/splits', { method: 'PUT', body: JSON.stringify(run) })).status, 200);
   const state = await (await api('/api/state')).json();
   assert.equal(state.layouts.layouts[0].name, 'Main');
+  assert.equal(state.layouts.revision, 1);
+  assert.equal(state.layoutsRevision, 1);
   assert.equal(state.splits.game, 'Celeste');
+  assert.equal(state.splits.revision, 1);
+  assert.equal(state.splitsRevision, 1);
   assert.equal((await api('/api/layouts', { method: 'PUT', body: '{"nope":1}' })).status, 400);
 });
 
-test('layouts keep a revision, so a stale browser cannot overwrite a newer save', async () => {
-  const put = (doc) => api('/api/layouts', { method: 'PUT', body: JSON.stringify(doc) });
-  let { rev } = await (await api('/api/layouts')).json();
-  const first = await put({ layouts: [{ id: 'a', name: 'Desk', sources: [] }], active: 'a', rev });
-  assert.equal(first.status, 200);
-  const saved = (await first.json()).rev;
-  assert.equal(saved, rev + 1);
-
-  // Another device still on the old revision is told what is there now.
-  const stale = await put({ layouts: [{ id: 'a', name: 'Laptop', sources: [] }], active: 'a', rev });
-  assert.equal(stale.status, 409);
-  const conflict = await stale.json();
-  assert.equal(conflict.rev, saved);
-  assert.equal(conflict.doc.layouts[0].name, 'Desk');
-
-  // Polling: nothing new is a short answer; a newer save comes with the layouts.
-  assert.deepEqual(await (await api(`/api/layouts?since=${saved}`)).json(), { rev: saved });
-  const fresh = await (await api(`/api/layouts?since=${rev}`)).json();
-  assert.equal(fresh.rev, saved);
-  assert.equal(fresh.doc.layouts[0].name, 'Desk');
-  assert.equal((await (await api('/api/state')).json()).layouts.rev, saved, 'the page learns the revision on load');
-
-  // A page from before revisions sends none and still saves.
-  assert.equal((await put({ layouts: [{ id: 'a', name: 'Old tab', sources: [] }], active: 'a' })).status, 200);
-  assert.equal((await (await api('/api/layouts')).json()).rev, saved + 1);
+test('concurrent split edits and invalid revisions cannot replace newer records', async () => {
+  const original = (await (await api('/api/state')).json()).splits;
+  const responses = await Promise.all(['Device A', 'Device B'].map((game) => api('/api/splits', {
+    method: 'PUT', body: JSON.stringify({ ...original, game }),
+  })));
+  assert.deepEqual(responses.map((r) => r.status).sort(), [200, 409]);
+  const saved = (await (await api('/api/state')).json()).splits;
+  const conflict = await responses.find((r) => r.status === 409).json();
+  assert.deepEqual(conflict.splits, saved);
+  assert.equal(saved.revision, original.revision + 1);
+  assert.equal(conflict.revision, saved.revision);
+  for (const revision of [-1, 1.5, '1', null]) {
+    const response = await api('/api/splits', { method: 'PUT', body: JSON.stringify({ ...saved, revision }) });
+    assert.equal(response.status, 400);
+  }
+  const { revision, ...unversioned } = saved;
+  assert.equal((await api('/api/splits', { method: 'PUT', body: JSON.stringify(unversioned) })).status, 409);
+  assert.deepEqual(JSON.parse(readFileSync(join(server.data, 'splits.json'), 'utf8')), saved);
 });
 
-test('the Twitch server is the global ingest, and the old address moves to it', async () => {
-  const fresh = await startServer();
-  const call = await login(fresh.url);
-  const ingest = async () => (await (await call('/api/state')).json()).settings.ingest;
-  assert.equal(await ingest(), 'rtmp://ingest.global-contribute.live-video.net/app');
-  await call('/api/settings', { method: 'PUT', body: JSON.stringify({ ingest: 'rtmp://live.twitch.tv/app' }) });
-  assert.equal(await ingest(), 'rtmp://ingest.global-contribute.live-video.net/app');
-  await call('/api/settings', { method: 'PUT', body: JSON.stringify({ ingest: 'rtmp://usw20.contribute.live-video.net/app' }) });
-  assert.equal(await ingest(), 'rtmp://usw20.contribute.live-video.net/app', 'a chosen regional server is kept');
-  fresh.stop();
+test('concurrent browsers cannot replace a newer saved layout', async () => {
+  const secondBrowser = await login(server.url);
+  const original = (await (await api('/api/state')).json()).layouts;
+  const saveFrom = (call, name) => call('/api/layouts', {
+    method: 'PUT', body: JSON.stringify({ ...original, layouts: [{ ...original.layouts[0], name }] }),
+  });
+  const responses = await Promise.all([saveFrom(api, 'First browser'), saveFrom(secondBrowser, 'Second browser')]);
+  assert.deepEqual(responses.map((r) => r.status).sort(), [200, 409]);
+  const saved = (await (await secondBrowser('/api/state')).json()).layouts;
+  assert.equal(saved.revision, original.revision + 1);
+  const conflict = await responses.find((r) => r.status === 409).json();
+  assert.deepEqual(conflict.layouts, saved);
+  assert.equal(conflict.revision, saved.revision);
+  assert.deepEqual(JSON.parse(readFileSync(join(server.data, 'layouts.json'), 'utf8')), saved);
+  assert.equal(readdirSync(server.data).some((name) => name.endsWith('.tmp')), false);
+  // A stale client with no version must also be rejected once a revision exists.
+  const { revision, ...unversioned } = original;
+  assert.equal((await api('/api/layouts', { method: 'PUT', body: JSON.stringify(unversioned) })).status, 409);
+  const updated = await secondBrowser('/api/layouts', {
+    method: 'PUT', body: JSON.stringify({ ...saved, active: saved.layouts[0].id }),
+  });
+  assert.equal(updated.status, 200);
+  assert.equal((await updated.json()).revision, saved.revision + 1);
 });
 
-test('the page may reach Twitch chat and its emotes, and nothing else outside the studio', async () => {
-  const csp = (await fetch(`${server.url}/login`)).headers.get('content-security-policy');
-  const directive = (name) => csp.split(';').map((d) => d.trim()).find((d) => d.split(' ')[0] === name);
-  assert.equal(directive('connect-src'), "connect-src 'self' wss://irc-ws.chat.twitch.tv");
-  assert.equal(directive('img-src'), "img-src 'self' data: blob: https://static-cdn.jtvnw.net");
-  assert.equal(directive('script-src'), "script-src 'self'");
-  assert.equal(directive('default-src'), "default-src 'self'");
+test('invalid layout revisions cannot bypass conflict checks', async () => {
+  for (const revision of [-1, 1.5, '1', null]) {
+    const res = await api('/api/layouts', { method: 'PUT', body: JSON.stringify({ layouts: [], revision }) });
+    assert.equal(res.status, 400, `accepted revision ${JSON.stringify(revision)}`);
+  }
+});
+
+test('legacy layouts migrate and acknowledged saves survive an abrupt restart', async () => {
+  const first = await startServer();
+  let restarted;
+  try {
+    const legacy = { layouts: [{ id: 'legacy', name: 'Old layout', sources: [] }], active: 'legacy' };
+    writeFileSync(join(first.data, 'layouts.json'), JSON.stringify(legacy));
+    const call = await login(first.url);
+    const loaded = (await (await call('/api/state')).json()).layouts;
+    assert.equal(loaded.revision, 0);
+    loaded.layouts[0].name = 'Saved before closing';
+    const response = await call('/api/layouts', { method: 'PUT', body: JSON.stringify(loaded) });
+    assert.equal(response.status, 200);
+    loaded.revision = (await response.json()).revision;
+    const exited = once(first.proc, 'exit');
+    first.proc.kill('SIGKILL');
+    await exited;
+    restarted = await startServer({ DATA_DIR: first.data }, { password: false });
+    const reopened = await login(restarted.url);
+    const state = await (await reopened('/api/state')).json();
+    assert.deepEqual(state.layouts, loaded);
+    assert.equal(statSync(join(first.data, 'layouts.json')).mode & 0o077, 0);
+  } finally {
+    first.stop();
+    restarted?.stop();
+  }
 });
 
 test('the stream key is stored but never sent back', async () => {
@@ -136,11 +183,30 @@ test('the stream key is stored but never sent back', async () => {
   const state = await (await api('/api/state')).text();
   assert.ok(!state.includes('SECRET'));
   assert.match(state, /"hasKey":true/);
+  assert.equal(JSON.parse(state).settings.ingest, GLOBAL_INGEST);
   assert.equal(statSync(join(server.data, 'settings.json')).mode & 0o077, 0, 'settings.json is readable by others');
   res = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ streamKey: 'bad key; rm -rf /' }) });
   assert.equal(res.status, 400);
   res = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ ingest: 'file:///etc/passwd' }) });
   assert.equal(res.status, 400);
+});
+
+test('saved legacy Twitch ingest migrates without changing custom servers or keys', async () => {
+  const other = await startServer();
+  try {
+    const call = await login(other.url);
+    const settingsFile = join(other.data, 'settings.json');
+    const saved = { ingest: 'rtmp://live.twitch.tv/app/', streamKey: 'live_legacy_PRIVATE', testMode: true };
+    writeFileSync(settingsFile, JSON.stringify(saved), { mode: 0o600 });
+    let state = await (await call('/api/state')).json();
+    assert.equal(state.settings.ingest, GLOBAL_INGEST);
+    assert.deepEqual(JSON.parse(readFileSync(settingsFile, 'utf8')), { ...saved, ingest: GLOBAL_INGEST });
+    const custom = { ...saved, ingest: 'rtmps://custom.example:443/my-app/' };
+    writeFileSync(settingsFile, JSON.stringify(custom));
+    state = await (await call('/api/state')).json();
+    assert.equal(state.settings.ingest, custom.ingest);
+    assert.deepEqual(JSON.parse(readFileSync(settingsFile, 'utf8')), custom);
+  } finally { other.stop(); }
 });
 
 test('backgrounds upload, are served with ranges, and need a session', async () => {
@@ -204,7 +270,7 @@ test('streaming pipes the browser’s bytes into ffmpeg, pointed at Twitch', asy
   s.ws.send(JSON.stringify({ type: 'stop' }));
   await wait(500);
   const args = readFileSync(join(server.data, 'args.txt'), 'utf8').split('\n');
-  assert.ok(args.includes('rtmp://ingest.global-contribute.live-video.net/app/live_123456_abcdefSECRET'), 'wrong target');
+  assert.ok(args.includes(`${GLOBAL_INGEST}/live_123456_abcdefSECRET`), 'wrong target');
   assert.ok(args.includes('libx264'));
   assert.equal(args[args.indexOf('-g') + 1], '120', 'keyframe every two seconds at 60 fps');
   assert.equal(args[args.indexOf('-b:v') + 1], '6000k');
